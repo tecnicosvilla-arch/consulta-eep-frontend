@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Consulta EEP</title>
+<link rel="manifest" href="manifest.json" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<meta name="theme-color" content="#16a34a" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>Consulta EEP</h1>
+    <span class="subtitle" id="subtitleText">Sube tu listado para empezar</span>
+  </header>
+
+  <main>
+    <!-- VIEW 1: subir Excel -->
+    <section id="view-upload" class="view">
+      <div class="upload-box">
+        <p>Sube el archivo Excel/CSV con el listado de matrículas (no importa el orden de las columnas). Si ya había un listado, se combina — los NIU repetidos se actualizan con los datos nuevos, y los que no vengan en este archivo se conservan.</p>
+        <label class="file-label">
+          📄 Elegir archivo
+          <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" hidden />
+        </label>
+        <div id="uploadStatus" class="upload-status"></div>
+      </div>
+    </section>
+
+    <!-- VIEW 2: elegir ruta -->
+    <section id="view-routes" class="view" style="display:none">
+      <h2 class="section-title">Selecciona tu ruta</h2>
+      <div id="routesList" class="routes-list"></div>
+      <button id="scanAllBtn" class="primary-btn" style="margin-bottom:6px">🔍 Revisar pendientes en TODAS las rutas</button>
+      <div id="routesStatusBar" class="status-bar" style="margin-bottom:10px"></div>
+      <div class="action-row">
+        <button id="statsBtn" class="secondary-btn">📊 Indicadores de linieros</button>
+        <button id="changeFileBtn" class="secondary-btn">📄 Cambiar archivo</button>
+      </div>
+    </section>
+
+    <!-- VIEW 3: detalle de ruta -->
+    <section id="view-detail" class="view" style="display:none">
+      <button id="backToRoutesBtn" class="back-btn">← Cambiar ruta</button>
+      <h2 id="detailRouteTitle" class="section-title"></h2>
+
+      <div class="controls">
+        <input id="search" type="text" placeholder="Buscar por NIU o nombre..." autocomplete="off" />
+        <div class="filters">
+          <button class="chip active" data-filter="pendiente">🔴 Pendientes</button>
+          <button class="chip" data-filter="pagado">🟢 Al día</button>
+          <button class="chip" data-filter="suspendido">✂️ Suspendidos</button>
+          <button class="chip" data-filter="todos">Todos</button>
+        </div>
+        <div class="action-row">
+          <button id="scanPendingBtn" class="primary-btn">🔍 Revisar pendientes</button>
+        </div>
+        <div id="statusBar" class="status-bar"></div>
+      </div>
+
+      <div id="summary" class="summary"></div>
+      <div id="list" class="list"></div>
+    </section>
+
+    <!-- VIEW 4: indicadores de linieros -->
+    <section id="view-stats" class="view" style="display:none">
+      <button id="backFromStatsBtn" class="back-btn">← Volver</button>
+      <h2 class="section-title">Indicadores de linieros</h2>
+      <div class="controls">
+        <select id="monthSelect" class="ruta-select"></select>
+      </div>
+      <div id="statsSummary" class="summary"></div>
+      <div id="statsList" class="list"></div>
+    </section>
+  </main>
+
+  <footer id="lastUpdate" class="footer"></footer>
+
+  <!-- Modal de confirmación de suspensión -->
+  <div id="corteModalOverlay" class="modal-overlay" style="display:none">
+    <div class="modal-box">
+      <h3>Confirmar suspensión del servicio</h3>
+      <p class="modal-line"><strong>Nombre:</strong> <span id="corteModalNombre"></span></p>
+      <p class="modal-line"><strong>NIU:</strong> <span id="corteModalNiu"></span></p>
+      <p class="modal-line"><strong>Dirección:</strong> <span id="corteModalDireccion"></span></p>
+
+      <label class="modal-label" for="corteTipoSelect">¿Cómo se realizó?</label>
+      <select id="corteTipoSelect">
+        <option value="poste">Corte en el poste</option>
+        <option value="pin">Corte en el pin</option>
+        <option value="notificacion">Solo se notificó al usuario (no se cortó)</option>
+      </select>
+
+      <label class="modal-label" for="corteHoraInput">Hora de la suspensión</label>
+      <input id="corteHoraInput" type="time" />
+
+      <label class="modal-label" for="corteLinieroInput">Tu nombre (liniero)</label>
+      <input id="corteLinieroInput" type="text" placeholder="Nombre completo" />
+
+      <div class="modal-actions">
+        <button id="corteCancelBtn" class="secondary-btn">Cancelar</button>
+        <button id="corteConfirmBtn" class="primary-btn">✂️ Confirmar</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
