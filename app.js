@@ -1,7 +1,5 @@
-// ⚠️ Mientras pruebas en tu PC, esto apunta a tu backend local (localhost:3000).
-// Cuando despliegues en Render, cámbialo por tu URL real, ej:
-// const BACKEND_URL = 'https://consulta-eep-backend.onrender.com';
-const BACKEND_URL = 'http://localhost:3000';
+// Backend en producción (Render)
+const BACKEND_URL = 'https://consulta-eep-backend.onrender.com';
 
 const LS_ROWS = 'eep_excel_rows';
 const LS_ROUTE = 'eep_selected_route';
