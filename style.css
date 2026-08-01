@@ -82,6 +82,16 @@ main { padding: 14px; }
   width: 100%;
 }
 
+.danger-btn {
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid #7f1d1d;
+  background: rgba(220,38,38,0.08);
+  color: #f87171;
+  font-size: 0.9rem;
+  width: 100%;
+}
+
 /* ---------- Detail screen ---------- */
 .back-btn {
   background: none;

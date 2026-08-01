@@ -164,6 +164,28 @@ document.getElementById('changeFileBtn').addEventListener('click', () => {
   subtitleText.textContent = 'Sube tu listado para empezar';
 });
 
+document.getElementById('resetMonthBtn').addEventListener('click', async () => {
+  const confirmado = window.confirm(
+    '¿Seguro que quieres resetear el mes?\n\n' +
+    'Esto borra el listado de matrículas y los resultados de pago actuales (útil si se subió un archivo equivocado).\n\n' +
+    'Los reportes de cortes, notificaciones y comprobantes de este y otros meses NO se pierden — siguen disponibles en Indicadores.'
+  );
+  if (!confirmado) return;
+  try {
+    await fetch(`${BACKEND_URL}/api/reset-mes`, { method: 'POST' });
+    excelRows = [];
+    scanResults = {};
+    selectedRoute = null;
+    saveRows();
+    saveResults();
+    saveRoute();
+    showView('upload');
+    subtitleText.textContent = 'Sube tu listado para empezar';
+  } catch (e) {
+    alert('No se pudo resetear — revisa tu conexión e intenta de nuevo.');
+  }
+});
+
 // ---------- Shared data sync ----------
 async function syncSharedRows() {
   try {
