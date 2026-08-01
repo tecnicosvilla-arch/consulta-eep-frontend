@@ -1,4 +1,4 @@
-const CACHE_NAME = 'consulta-eep-v1';
+const CACHE_NAME = 'consulta-eep-v2'; // bump this on every future deploy that changes app.js/index.html/style.css
 const ASSETS = ['./index.html', './style.css', './app.js', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (event) => {
@@ -20,7 +20,16 @@ self.addEventListener('fetch', (event) => {
   // Never cache API calls — those must always try the network first
   if (url.pathname.startsWith('/api/')) return;
 
+  // Network-first for the app shell: always try to get the latest version first,
+  // only falling back to the cached copy when there's no connection (offline).
+  // This is what prevents a stale app.js from getting stuck forever after a deploy.
   event.respondWith(
-    caches.match(event.request).then((cached) => cached || fetch(event.request))
+    fetch(event.request)
+      .then((res) => {
+        const clone = res.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+        return res;
+      })
+      .catch(() => caches.match(event.request))
   );
 });

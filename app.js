@@ -7,13 +7,28 @@ const LS_RESULTS = 'eep_scan_results';
 const LS_LINIERO = 'eep_liniero_nombre';
 
 let excelRows = [];
-let scanResults = {}; // { [niu]: { pagado, ultimoPago, estadoPago, checkedAt } }
-let cortes = []; // [{ niu, nombre, direccion, ruta, liniero, fecha }]
+let scanResults = {}; // { [niu]: { pagado, ultimoPago, estadoPago, fechaRegistroPago, checkedAt, ... } }
+let cortes = []; // [{ niu, nombre, direccion, ruta, liniero, tipo, fecha, subidoCortes }]
+let compartidos = []; // [{ niu, numeroFactura, fecha }]
 let rutaLinieros = {}; // { [ruta]: linieroName }
 let selectedRoute = null;
 let currentFilter = 'pendiente';
 let searchTerm = '';
 let pendingCorteRow = null; // row waiting for corte confirmation in the modal
+
+function parseSpanishDateTime(str) {
+  // Expects "DD-MES-YYYY hh:mmAM/PM" e.g. "08-JUL-2026 05:28PM"
+  if (!str) return null;
+  const meses = { ENE: 0, FEB: 1, MAR: 2, ABR: 3, MAY: 4, JUN: 5, JUL: 6, AGO: 7, SEP: 8, OCT: 9, NOV: 10, DIC: 11 };
+  const match = str.trim().match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})\s+(\d{1,2}):(\d{2})(AM|PM)$/i);
+  if (!match) return null;
+  const [, day, mesTxt, year, hh, mm, ampm] = match;
+  const mes = meses[mesTxt.toUpperCase()];
+  if (mes === undefined) return null;
+  let hour = parseInt(hh, 10) % 12;
+  if (ampm.toUpperCase() === 'PM') hour += 12;
+  return new Date(parseInt(year, 10), mes, parseInt(day, 10), hour, parseInt(mm, 10));
+}
 
 // ---------- Column mapping (flexible — works regardless of column order/casing) ----------
 const HEADER_MAP = {
@@ -35,20 +50,6 @@ const HEADER_MAP = {
   pendiente: 'saldoPendiente',
   observacion: 'observacion',
 };
-
-function parseSpanishDateTime(str) {
-  // Expects "DD-MES-YYYY hh:mmAM/PM" e.g. "08-JUL-2026 05:28PM"
-  if (!str) return null;
-  const meses = { ENE: 0, FEB: 1, MAR: 2, ABR: 3, MAY: 4, JUN: 5, JUL: 6, AGO: 7, SEP: 8, OCT: 9, NOV: 10, DIC: 11 };
-  const match = str.trim().match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})\s+(\d{1,2}):(\d{2})(AM|PM)$/i);
-  if (!match) return null;
-  const [, day, mesTxt, year, hh, mm, ampm] = match;
-  const mes = meses[mesTxt.toUpperCase()];
-  if (mes === undefined) return null;
-  let hour = parseInt(hh, 10) % 12;
-  if (ampm.toUpperCase() === 'PM') hour += 12;
-  return new Date(parseInt(year, 10), mes, parseInt(day, 10), hour, parseInt(mm, 10));
-}
 
 function normalizeHeader(h) {
   return String(h)
@@ -202,6 +203,16 @@ async function syncCortes() {
   }
 }
 
+async function syncCompartidos() {
+  try {
+    const res = await fetch(`${BACKEND_URL}/api/compartidos`);
+    const data = await res.json();
+    compartidos = data.compartidos || [];
+  } catch (e) {
+    // offline — keep whatever we had
+  }
+}
+
 async function syncRutaLinieros() {
   try {
     const res = await fetch(`${BACKEND_URL}/api/rutas-linieros`);
@@ -335,16 +346,21 @@ function statusOf(niu) {
   return evaluarEstado(niu).status;
 }
 
+function compartidoRecord(niu, numeroFactura) {
+  if (!numeroFactura) return null;
+  return compartidos.find((c) => c.niu === niu && c.numeroFactura === numeroFactura) || null;
+}
+
 function goToDetail() {
   detailRouteTitle.textContent = `Ruta ${selectedRoute}`;
   subtitleText.textContent = `Ruta ${selectedRoute}`;
   showView('detail');
-  Promise.all([syncSharedResults(), syncCortes()]).then(renderDetail);
+  Promise.all([syncSharedResults(), syncCortes(), syncCompartidos()]).then(renderDetail);
   renderDetail();
 
   if (detailRefreshTimer) clearInterval(detailRefreshTimer);
   detailRefreshTimer = setInterval(() => {
-    Promise.all([syncSharedResults(), syncCortes()]).then(renderDetail);
+    Promise.all([syncSharedResults(), syncCortes(), syncCompartidos()]).then(renderDetail);
   }, 20000); // pick up progress from other devices every 20s
 }
 
@@ -394,26 +410,33 @@ function renderDetail() {
       } else if (r._eval.corteInvalido) {
         infoLine = `El pago fue anterior al corte — no aplica suspensión`;
       } else if (scan) {
-        infoLine = `Último pago: ${escapeHtml(scan.ultimoPago || '—')}${scan.estadoPago ? ' (' + escapeHtml(scan.estadoPago) + ')' : ''}`;
+        const fechaConHora = scan.fechaRegistroPago || scan.ultimoPago || '—';
+        infoLine = `Último pago: ${escapeHtml(fechaConHora)}${scan.estadoPago ? ' (' + escapeHtml(scan.estadoPago) + ')' : ''}`;
       } else {
         infoLine = 'Aún no revisado';
       }
       const showCorteBtn = s === 'no' || s === 'unk';
       const showSubidoBtn = s === 'suspendido' && corte && !corte.subidoCortes;
       const subidoBadge = s === 'suspendido' && corte && corte.subidoCortes ? '<span class="uploaded-tag">📤 Reportado</span>' : '';
+
+      const yaCompartido = s === 'ok' && scan && scan.numeroFactura ? compartidoRecord(r.niu, scan.numeroFactura) : null;
+      const showCompartirBtn = s === 'ok' && scan && scan.numeroFactura && !yaCompartido;
+      const compartidoBadge = yaCompartido ? '<span class="uploaded-tag">✅ Compartido</span>' : '';
+
       return `
       <div class="item" data-niu="${escapeHtml(r.niu)}">
         <div class="info">
           <div class="name">${escapeHtml(r.nombre || '(sin nombre)')}</div>
           <div class="meta">NIU ${escapeHtml(r.niu)} · ${escapeHtml(r.direccion || '')}</div>
           <div class="meta2">Medidor ${escapeHtml(r.medidor || '—')} · Sector ${escapeHtml(r.sector || '—')} · Atraso: ${escapeHtml(r.mesesAtrasados || '0')} · Saldo: ${escapeHtml(r.saldoPendiente || '—')}</div>
-          <div class="meta3">${infoLine} ${subidoBadge}</div>
+          <div class="meta3">${infoLine} ${subidoBadge}${compartidoBadge}</div>
         </div>
         <div class="item-actions">
           <div class="badge ${badgeClass}">${badgeLabel}</div>
           <button class="recheck-btn" data-niu="${escapeHtml(r.niu)}">🔄 Revisar</button>
           ${showCorteBtn ? `<button class="corte-btn" data-niu="${escapeHtml(r.niu)}">✂️ Suspender</button>` : ''}
           ${showSubidoBtn ? `<button class="subido-btn" data-id="${escapeHtml(corte.id)}">📤 Marcar subido a cortes</button>` : ''}
+          ${showCompartirBtn ? `<button class="compartir-btn" data-niu="${escapeHtml(r.niu)}">📤 Compartir comprobante</button>` : ''}
         </div>
       </div>`;
     })
@@ -428,10 +451,129 @@ function renderDetail() {
   listEl.querySelectorAll('.subido-btn').forEach((btn) => {
     btn.addEventListener('click', () => marcarSubido(btn.dataset.id));
   });
+  listEl.querySelectorAll('.compartir-btn').forEach((btn) => {
+    btn.addEventListener('click', () => compartirComprobante(btn.dataset.niu, btn));
+  });
 }
 
 function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// ---------- Comprobante (voucher) generation + share ----------
+function drawVoucherCanvas(row, scan) {
+  const canvas = document.createElement('canvas');
+  const W = 720;
+  const PAD = 36;
+  canvas.width = W;
+  const ctx = canvas.getContext('2d');
+
+  const lines = [
+    ['Nombre', row.nombre || '—'],
+    ['NIU', row.niu],
+    ['Fecha registro pago', scan.fechaRegistroPago || '—'],
+    ['Estado', scan.estadoPago || '—'],
+    ['Fecha pago', scan.ultimoPago || '—'],
+    ['Valor pagado', scan.valorPagado || '—'],
+    ['Medio de pago', scan.medioPago || '—'],
+    ['Entidad recaudo', (scan.entidadRecaudo || '—').replace(/^:\s*/, '')],
+    ['Número cuenta', scan.numeroCuenta || '—'],
+    ['Factura', scan.numeroFactura ? `Pago Factura: ${scan.numeroFactura}` : '—'],
+  ];
+
+  const lineHeight = 44;
+  const headerHeight = 120;
+  const footerHeight = 60;
+  canvas.height = headerHeight + lines.length * lineHeight + footerHeight;
+
+  // Background
+  ctx.fillStyle = '#0b1220';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Header
+  ctx.fillStyle = '#16a34a';
+  ctx.fillRect(0, 0, canvas.width, headerHeight);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 30px Arial';
+  ctx.fillText('Comprobante de Pago', PAD, 55);
+  ctx.font = '16px Arial';
+  ctx.fillText('Consulta EEP', PAD, 85);
+
+  // Body
+  let y = headerHeight + 34;
+  ctx.textBaseline = 'alphabetic';
+  lines.forEach(([label, value]) => {
+    ctx.fillStyle = '#8a94a6';
+    ctx.font = '15px Arial';
+    ctx.fillText(label, PAD, y);
+    ctx.fillStyle = '#e6ebf5';
+    ctx.font = 'bold 19px Arial';
+    ctx.fillText(String(value), PAD, y + 22);
+    y += lineHeight;
+  });
+
+  // Footer
+  ctx.strokeStyle = '#263049';
+  ctx.beginPath();
+  ctx.moveTo(PAD, y);
+  ctx.lineTo(canvas.width - PAD, y);
+  ctx.stroke();
+  ctx.fillStyle = '#8a94a6';
+  ctx.font = '13px Arial';
+  ctx.fillText(`Generado ${new Date().toLocaleString('es-CO')}`, PAD, y + 30);
+
+  return canvas;
+}
+
+async function compartirComprobante(niu, btn) {
+  const row = excelRows.find((r) => r.niu === niu);
+  const scan = scanResults[niu];
+  if (!row || !scan) return;
+
+  btn.disabled = true;
+  btn.textContent = 'Generando...';
+
+  try {
+    const canvas = drawVoucherCanvas(row, scan);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+    const file = new File([blob], `comprobante_${niu}.png`, { type: 'image/png' });
+
+    let shared = false;
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: 'Comprobante de pago', text: `Comprobante de pago — NIU ${niu}` });
+        shared = true;
+      } catch (shareErr) {
+        // user cancelled the share sheet — not an error, just don't mark as shared
+        shared = false;
+      }
+    } else {
+      // Fallback: download the image so it can be shared manually
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `comprobante_${niu}.png`;
+      a.click();
+      URL.revokeObjectURL(url);
+      shared = true; // downloaded successfully — treat as "handled"
+    }
+
+    if (shared) {
+      await fetch(`${BACKEND_URL}/api/compartidos`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ niu, numeroFactura: scan.numeroFactura }),
+      });
+      await syncCompartidos();
+      renderDetail();
+    }
+  } catch (e) {
+    btn.textContent = 'Error — reintentar';
+    btn.disabled = false;
+    return;
+  }
+  btn.disabled = false;
+  btn.textContent = '📤 Compartir comprobante';
 }
 
 // ---------- Corte modal ----------
