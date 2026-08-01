@@ -165,6 +165,12 @@ document.getElementById('changeFileBtn').addEventListener('click', () => {
 });
 
 document.getElementById('resetMonthBtn').addEventListener('click', async () => {
+  const clave = window.prompt('Esta acción requiere clave de autorización:');
+  if (clave === null) return; // cancelled
+  if (clave !== '033093') {
+    alert('Clave incorrecta.');
+    return;
+  }
   const confirmado = window.confirm(
     '¿Seguro que quieres resetear el mes?\n\n' +
     'Esto borra el listado de matrículas y los resultados de pago actuales (útil si se subió un archivo equivocado).\n\n' +
@@ -191,11 +197,12 @@ async function syncSharedRows() {
   try {
     const res = await fetch(`${BACKEND_URL}/api/data/rows`);
     const data = await res.json();
-    if (data.rows && data.rows.length > 0) {
-      excelRows = data.rows;
-      saveRows();
-      return true;
-    }
+    // Always mirror the server exactly (including empty, e.g. right after a
+    // monthly reset) — a conditional "only update if non-empty" left stale
+    // cached data stuck forever on devices that already had something loaded.
+    excelRows = Array.isArray(data.rows) ? data.rows : [];
+    saveRows();
+    return excelRows.length > 0;
   } catch (e) {
     // offline or backend down — keep whatever is cached locally
   }
@@ -206,10 +213,10 @@ async function syncSharedResults() {
   try {
     const res = await fetch(`${BACKEND_URL}/api/results`);
     const data = await res.json();
-    if (data.results) {
-      scanResults = { ...scanResults, ...data.results };
-      saveResults();
-    }
+    // Full replace, not merge — the server is authoritative, so a reset there
+    // (new month) must actually clear stale local results too.
+    scanResults = data.results && typeof data.results === 'object' ? data.results : {};
+    saveResults();
   } catch (e) {
     // offline — keep local results
   }
