@@ -50,6 +50,7 @@
         <div class="filters">
           <button class="chip active" data-filter="pendiente">🔴 Pendientes</button>
           <button class="chip" data-filter="pagado">🟢 Al día</button>
+          <button class="chip" data-filter="notificado">📢 Notificados</button>
           <button class="chip" data-filter="suspendido">✂️ Suspendidos</button>
           <button class="chip" data-filter="todos">Todos</button>
         </div>
@@ -71,7 +72,10 @@
         <select id="monthSelect" class="ruta-select"></select>
       </div>
       <div id="statsSummary" class="summary"></div>
+      <h3 class="section-title" style="font-size:0.95rem;margin-top:18px">Por liniero</h3>
       <div id="statsList" class="list"></div>
+      <h3 class="section-title" style="font-size:0.95rem;margin-top:18px">Por ruta</h3>
+      <div id="statsRutas" class="list"></div>
     </section>
   </main>
 

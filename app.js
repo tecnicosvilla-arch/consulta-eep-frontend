@@ -317,15 +317,20 @@ function cortadoRecord(niu) {
   return matches.sort((a, b) => new Date(b.fecha) - new Date(a.fecha))[0];
 }
 
-// Returns { status: 'ok'|'no'|'unk'|'suspendido', pagado: bool, corteInvalido: bool }
+// Returns { status: 'ok'|'no'|'unk'|'notificado'|'suspendido', pagado: bool, corteInvalido: bool }
 function evaluarEstado(niu) {
   const scan = scanResults[niu];
   const pagado = !!(scan && scan.pagado);
   const corte = cortadoRecord(niu);
 
-  if (!corte || corte.tipo === 'notificacion') {
-    // no physical cut — normal payment-based status
+  if (!corte) {
     return { status: pagado ? 'ok' : (scan ? 'no' : 'unk'), pagado, corteInvalido: false };
+  }
+
+  if (corte.tipo === 'notificacion') {
+    // A notification never physically cuts service — paying makes it "al día"
+    // straight away; otherwise it's its own distinct category, not "pendiente".
+    return { status: pagado ? 'ok' : 'notificado', pagado, corteInvalido: false };
   }
 
   // Physical cut (poste/pin) — check whether the payment happened BEFORE the cut,
@@ -374,6 +379,7 @@ function renderDetail() {
     const s = r._eval.status;
     if (currentFilter === 'pendiente' && s !== 'no' && s !== 'unk') return false;
     if (currentFilter === 'pagado' && s !== 'ok') return false;
+    if (currentFilter === 'notificado' && s !== 'notificado') return false;
     if (currentFilter === 'suspendido' && s !== 'suspendido') return false;
     if (term && !`${r.niu} ${r.nombre}`.toLowerCase().includes(term)) return false;
     return true;
@@ -382,12 +388,14 @@ function renderDetail() {
   const okCount = withStatus.filter((r) => r._eval.status === 'ok').length;
   const noCount = withStatus.filter((r) => r._eval.status === 'no').length;
   const unkCount = withStatus.filter((r) => r._eval.status === 'unk').length;
+  const notificadoCount = withStatus.filter((r) => r._eval.status === 'notificado').length;
   const suspendidoCount = withStatus.filter((r) => r._eval.status === 'suspendido').length;
 
   summaryEl.innerHTML = `
     <div class="box"><div class="n">${withStatus.length}</div><div class="l">Total</div></div>
     <div class="box"><div class="n" style="color:#4ade80">${okCount}</div><div class="l">Al día</div></div>
     <div class="box"><div class="n" style="color:#f87171">${noCount + unkCount}</div><div class="l">Pendientes</div></div>
+    <div class="box"><div class="n" style="color:#fbbf24">${notificadoCount}</div><div class="l">Notificados</div></div>
     <div class="box"><div class="n" style="color:#93c5fd">${suspendidoCount}</div><div class="l">Suspendidos</div></div>
   `;
 
@@ -399,14 +407,16 @@ function renderDetail() {
   listEl.innerHTML = filtered
     .map((r) => {
       const s = r._eval.status;
-      const badgeClass = s === 'ok' ? 'ok' : s === 'no' ? 'no' : s === 'suspendido' ? 'suspendido' : 'unk';
-      const badgeLabel = s === 'ok' ? '✅ Al día' : s === 'no' ? '❌ Pendiente' : s === 'suspendido' ? '✂️ Suspendido' : '⏳ Sin revisar';
+      const badgeClass = s === 'ok' ? 'ok' : s === 'no' ? 'no' : s === 'suspendido' ? 'suspendido' : s === 'notificado' ? 'notificado' : 'unk';
+      const badgeLabel = s === 'ok' ? '✅ Al día' : s === 'no' ? '❌ Pendiente' : s === 'suspendido' ? '✂️ Suspendido' : s === 'notificado' ? '📢 Notificado' : '⏳ Sin revisar';
       const scan = scanResults[r.niu];
       const corte = cortadoRecord(r.niu);
       let infoLine;
       if (s === 'suspendido') {
         infoLine = `Suspendido por ${escapeHtml(corte.liniero)} el ${new Date(corte.fecha).toLocaleString('es-CO')}`;
         if (r._eval.pagado) infoLine += ' · 💰 Ya pagó — falta reconexión';
+      } else if (s === 'notificado') {
+        infoLine = `Notificado por ${escapeHtml(corte.liniero)} el ${new Date(corte.fecha).toLocaleString('es-CO')}`;
       } else if (r._eval.corteInvalido) {
         infoLine = `El pago fue anterior al corte — no aplica suspensión`;
       } else if (scan) {
@@ -415,7 +425,7 @@ function renderDetail() {
       } else {
         infoLine = 'Aún no revisado';
       }
-      const showCorteBtn = s === 'no' || s === 'unk';
+      const showCorteBtn = s === 'no' || s === 'unk' || s === 'notificado';
       const showSubidoBtn = s === 'suspendido' && corte && !corte.subidoCortes;
       const subidoBadge = s === 'suspendido' && corte && corte.subidoCortes ? '<span class="uploaded-tag">📤 Reportado</span>' : '';
 
@@ -530,6 +540,14 @@ async function compartirComprobante(niu, btn) {
   const scan = scanResults[niu];
   if (!row || !scan) return;
 
+  let liniero = getSavedLiniero();
+  if (!liniero) {
+    liniero = window.prompt('Tu nombre (liniero que comparte el comprobante):', '') || '';
+    if (!liniero.trim()) return;
+    saveLiniero(liniero.trim());
+    liniero = liniero.trim();
+  }
+
   btn.disabled = true;
   btn.textContent = 'Generando...';
 
@@ -562,7 +580,7 @@ async function compartirComprobante(niu, btn) {
       await fetch(`${BACKEND_URL}/api/compartidos`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ niu, numeroFactura: scan.numeroFactura }),
+        body: JSON.stringify({ niu, numeroFactura: scan.numeroFactura, liniero }),
       });
       await syncCompartidos();
       renderDetail();
@@ -758,6 +776,7 @@ const backFromStatsBtn = document.getElementById('backFromStatsBtn');
 const monthSelect = document.getElementById('monthSelect');
 const statsSummary = document.getElementById('statsSummary');
 const statsList = document.getElementById('statsList');
+const statsRutas = document.getElementById('statsRutas');
 
 function monthKey(dateIso) {
   const d = new Date(dateIso);
@@ -771,14 +790,15 @@ function monthLabel(key) {
 
 statsBtn.addEventListener('click', async () => {
   showView('stats');
-  await syncCortes();
+  await Promise.all([syncCortes(), syncCompartidos(), syncSharedResults()]);
   renderStats();
+  renderStatsRutas();
 });
 backFromStatsBtn.addEventListener('click', goToRoutes);
 
 function renderStats() {
   const currentKey = monthKey(new Date().toISOString());
-  const keysInData = Array.from(new Set(cortes.map((c) => monthKey(c.fecha))));
+  const keysInData = Array.from(new Set([...cortes.map((c) => monthKey(c.fecha)), ...compartidos.map((c) => monthKey(c.fecha))]));
   if (!keysInData.includes(currentKey)) keysInData.push(currentKey);
   keysInData.sort().reverse();
 
@@ -792,10 +812,13 @@ function renderStats() {
 monthSelect.addEventListener('change', () => renderStatsForMonth(monthSelect.value));
 
 function renderStatsForMonth(key) {
-  const cortesDelMes = cortes.filter((c) => monthKey(c.fecha) === key && c.tipo !== 'notificacion');
+  const cortesDelMes = cortes.filter((c) => monthKey(c.fecha) === key);
+  const cortesReales = cortesDelMes.filter((c) => c.tipo !== 'notificacion');
+  const notificaciones = cortesDelMes.filter((c) => c.tipo === 'notificacion');
+  const compartidosDelMes = compartidos.filter((c) => monthKey(c.fecha) === key);
 
   const today = new Date().toISOString().slice(0, 10);
-  const cortesHoy = cortesDelMes.filter((c) => c.fecha.slice(0, 10) === today).length;
+  const cortesHoy = cortesReales.filter((c) => c.fecha.slice(0, 10) === today).length;
 
   // start of the current week (Monday)
   const now = new Date();
@@ -803,46 +826,95 @@ function renderStatsForMonth(key) {
   const monday = new Date(now);
   monday.setDate(now.getDate() - dayOfWeek);
   monday.setHours(0, 0, 0, 0);
-  const cortesSemana = cortesDelMes.filter((c) => new Date(c.fecha) >= monday).length;
+  const cortesSemana = cortesReales.filter((c) => new Date(c.fecha) >= monday).length;
 
   statsSummary.innerHTML = `
-    <div class="box"><div class="n">${cortesDelMes.length}</div><div class="l">Total del mes</div></div>
-    <div class="box"><div class="n">${cortesSemana}</div><div class="l">Esta semana</div></div>
-    <div class="box"><div class="n">${cortesHoy}</div><div class="l">Hoy</div></div>
+    <div class="box"><div class="n">${cortesReales.length}</div><div class="l">Cortes del mes</div></div>
+    <div class="box"><div class="n">${notificaciones.length}</div><div class="l">Notificaciones</div></div>
+    <div class="box"><div class="n">${compartidosDelMes.length}</div><div class="l">Comprobantes compartidos</div></div>
+    <div class="box"><div class="n">${cortesSemana}</div><div class="l">Cortes esta semana</div></div>
+    <div class="box"><div class="n">${cortesHoy}</div><div class="l">Cortes hoy</div></div>
   `;
 
-  // Per-liniero totals
-  const porLiniero = {};
-  cortesDelMes.forEach((c) => {
-    porLiniero[c.liniero] = (porLiniero[c.liniero] || 0) + 1;
-  });
-  const linieros = Object.keys(porLiniero).sort((a, b) => porLiniero[b] - porLiniero[a]);
+  // Per-liniero totals: cortes reales + notificaciones + comprobantes compartidos
+  const linierosSet = new Set([
+    ...cortesDelMes.map((c) => c.liniero),
+    ...compartidosDelMes.map((c) => c.liniero).filter(Boolean),
+  ]);
 
-  if (linieros.length === 0) {
-    statsList.innerHTML = `<div class="empty">Sin cortes registrados este mes</div>`;
+  if (linierosSet.size === 0) {
+    statsList.innerHTML = `<div class="empty">Sin actividad registrada este mes</div>`;
     return;
   }
 
-  statsList.innerHTML = linieros
-    .map((liniero) => {
-      const registros = cortesDelMes
-        .filter((c) => c.liniero === liniero)
-        .sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
-      const porDia = {};
-      registros.forEach((r) => {
-        const dia = r.fecha.slice(0, 10);
-        porDia[dia] = (porDia[dia] || 0) + 1;
-      });
+  const porLiniero = Array.from(linierosSet).map((liniero) => {
+    const misCortes = cortesReales.filter((c) => c.liniero === liniero);
+    const misNotificaciones = notificaciones.filter((c) => c.liniero === liniero);
+    const misCompartidos = compartidosDelMes.filter((c) => c.liniero === liniero);
+    const totalAcciones = misCortes.length + misNotificaciones.length + misCompartidos.length;
+    const porDia = {};
+    [...misCortes, ...misNotificaciones].forEach((r) => {
+      const dia = r.fecha.slice(0, 10);
+      porDia[dia] = (porDia[dia] || 0) + 1;
+    });
+    return { liniero, misCortes, misNotificaciones, misCompartidos, totalAcciones, porDia };
+  }).sort((a, b) => b.totalAcciones - a.totalAcciones);
+
+  statsList.innerHTML = porLiniero
+    .map(({ liniero, misCortes, misNotificaciones, misCompartidos, porDia }) => {
       const diasOrdenados = Object.keys(porDia).sort().reverse();
       const detalleDias = diasOrdenados
-        .map((d) => `<div class="stat-day-row"><span>${new Date(d).toLocaleDateString('es-CO')}</span><span>${porDia[d]} cortes</span></div>`)
+        .map((d) => `<div class="stat-day-row"><span>${new Date(d).toLocaleDateString('es-CO')}</span><span>${porDia[d]} cortes/notificaciones</span></div>`)
         .join('');
       return `
       <div class="item">
         <div class="info">
           <div class="name">${escapeHtml(liniero)}</div>
-          <div class="meta">${porLiniero[liniero]} cortes en el mes · ${diasOrdenados.length} días activos</div>
+          <div class="meta">✂️ ${misCortes.length} cortes · 📢 ${misNotificaciones.length} notificaciones · 📤 ${misCompartidos.length} comprobantes compartidos</div>
           <div class="stat-days">${detalleDias}</div>
+        </div>
+      </div>`;
+    })
+    .join('');
+}
+
+function renderStatsRutas() {
+  const counts = {};
+  excelRows.forEach((r) => {
+    const ruta = r.ruta || '(sin ruta)';
+    if (!counts[ruta]) counts[ruta] = { total: 0, ok: 0, no: 0, unk: 0, notificado: 0, suspendido: 0 };
+    counts[ruta].total++;
+    const s = evaluarEstado(r.niu).status;
+    if (s === 'ok') counts[ruta].ok++;
+    else if (s === 'no') counts[ruta].no++;
+    else if (s === 'unk') counts[ruta].unk++;
+    else if (s === 'notificado') counts[ruta].notificado++;
+    else if (s === 'suspendido') counts[ruta].suspendido++;
+  });
+
+  const rutas = Object.keys(counts).sort((a, b) => a.localeCompare(b, 'es', { numeric: true }));
+  if (rutas.length === 0) {
+    statsRutas.innerHTML = `<div class="empty">Sube un listado para ver esto</div>`;
+    return;
+  }
+
+  const pct = (n, total) => (total === 0 ? 0 : Math.round((n / total) * 100));
+
+  statsRutas.innerHTML = rutas
+    .map((ruta) => {
+      const c = counts[ruta];
+      const pendientesPct = pct(c.no + c.unk, c.total);
+      const pagadosPct = pct(c.ok, c.total);
+      const notificadosPct = pct(c.notificado, c.total);
+      const suspendidosPct = pct(c.suspendido, c.total);
+      return `
+      <div class="item">
+        <div class="info" style="width:100%">
+          <div class="name">Ruta ${escapeHtml(ruta)} · ${c.total} matrículas</div>
+          <div class="route-pct-row"><span>🟢 Al día</span><span>${c.ok} (${pagadosPct}%)</span></div>
+          <div class="route-pct-row"><span>🔴 Pendientes</span><span>${c.no + c.unk} (${pendientesPct}%)</span></div>
+          <div class="route-pct-row"><span>📢 Notificados</span><span>${c.notificado} (${notificadosPct}%)</span></div>
+          <div class="route-pct-row"><span>✂️ Suspendidos</span><span>${c.suspendido} (${suspendidosPct}%)</span></div>
         </div>
       </div>`;
     })

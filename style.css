@@ -113,9 +113,10 @@ main { padding: 14px; }
   width: 100%;
 }
 
-.filters { display: flex; gap: 8px; }
+.filters { display: flex; gap: 8px; flex-wrap: wrap; }
 .chip {
   flex: 1;
+  min-width: 90px;
   padding: 8px 6px;
   border-radius: 20px;
   border: 1px solid #263049;
@@ -141,8 +142,8 @@ main { padding: 14px; }
 
 .status-bar { font-size: 0.85rem; color: var(--muted); min-height: 18px; }
 
-.summary { display: flex; gap: 10px; margin-bottom: 14px; }
-.summary .box { flex: 1; background: var(--card); border-radius: 10px; padding: 10px; text-align: center; }
+.summary { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+.summary .box { flex: 1; min-width: 70px; background: var(--card); border-radius: 10px; padding: 10px; text-align: center; }
 .summary .box .n { font-size: 1.4rem; font-weight: 700; }
 .summary .box .l { font-size: 0.75rem; color: var(--muted); }
 
@@ -169,6 +170,7 @@ main { padding: 14px; }
 .badge.no { background: rgba(220,38,38,0.15); color: #f87171; }
 .badge.unk { background: rgba(75,85,104,0.25); color: var(--muted); }
 .badge.suspendido { background: rgba(59,130,246,0.15); color: #93c5fd; }
+.badge.notificado { background: rgba(251,191,36,0.15); color: #fbbf24; }
 
 .uploaded-tag {
   display: inline-block;
@@ -190,6 +192,15 @@ main { padding: 14px; }
 }
 
 .subido-btn {
+  border: 1px solid #1e3a8a;
+  background: rgba(59,130,246,0.12);
+  color: #93c5fd;
+  border-radius: 8px;
+  padding: 5px 9px;
+  font-size: 0.74rem;
+}
+
+.compartir-btn {
   border: 1px solid #1e3a8a;
   background: rgba(59,130,246,0.12);
   color: #93c5fd;
@@ -262,6 +273,16 @@ main { padding: 14px; }
   color: var(--muted);
   padding: 2px 0;
 }
+
+.route-pct-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  color: var(--text);
+  padding: 4px 0;
+  border-bottom: 1px solid #1a2540;
+}
+.route-pct-row:last-child { border-bottom: none; }
 
 .recheck-btn {
   border: 1px solid #263049;
