@@ -322,7 +322,6 @@ function renderRoutesList() {
 // ---------- Detail screen ----------
 const detailRouteTitle = document.getElementById('detailRouteTitle');
 const listEl = document.getElementById('list');
-const summaryEl = document.getElementById('summary');
 const statusBar = document.getElementById('statusBar');
 const lastUpdateEl = document.getElementById('lastUpdate');
 const scanPendingBtn = document.getElementById('scanPendingBtn');
@@ -399,18 +398,23 @@ function goToDetail() {
 }
 
 function renderDetail() {
-  const rows = currentRouteRows();
   const term = searchTerm.trim().toLowerCase();
+  const searching = term.length > 0;
+  // A search looks across every route, ignoring the current route + status filter.
+  // Without a search, we stay scoped to the selected route as before.
+  const baseRows = searching ? excelRows : currentRouteRows();
 
-  const withStatus = rows.map((r) => ({ ...r, _eval: evaluarEstado(r.niu) }));
+  const withStatus = baseRows.map((r) => ({ ...r, _eval: evaluarEstado(r.niu) }));
 
   let filtered = withStatus.filter((r) => {
+    if (searching) {
+      return `${r.niu} ${r.nombre}`.toLowerCase().includes(term);
+    }
     const s = r._eval.status;
     if (currentFilter === 'pendiente' && s !== 'no' && s !== 'unk') return false;
     if (currentFilter === 'pagado' && s !== 'ok') return false;
     if (currentFilter === 'notificado' && s !== 'notificado') return false;
     if (currentFilter === 'suspendido' && s !== 'suspendido') return false;
-    if (term && !`${r.niu} ${r.nombre}`.toLowerCase().includes(term)) return false;
     return true;
   });
 
@@ -420,13 +424,19 @@ function renderDetail() {
   const notificadoCount = withStatus.filter((r) => r._eval.status === 'notificado').length;
   const suspendidoCount = withStatus.filter((r) => r._eval.status === 'suspendido').length;
 
-  summaryEl.innerHTML = `
-    <div class="box"><div class="n">${withStatus.length}</div><div class="l">Total</div></div>
-    <div class="box"><div class="n" style="color:#4ade80">${okCount}</div><div class="l">Al día</div></div>
-    <div class="box"><div class="n" style="color:#f87171">${noCount + unkCount}</div><div class="l">Pendientes</div></div>
-    <div class="box"><div class="n" style="color:#fbbf24">${notificadoCount}</div><div class="l">Notificados</div></div>
-    <div class="box"><div class="n" style="color:#93c5fd">${suspendidoCount}</div><div class="l">Suspendidos</div></div>
-  `;
+  const chipCounts = {
+    pendiente: noCount + unkCount,
+    pagado: okCount,
+    notificado: notificadoCount,
+    suspendido: suspendidoCount,
+    todos: withStatus.length,
+  };
+  document.querySelectorAll('#view-detail .chip').forEach((chip) => {
+    const key = chip.dataset.filter;
+    const label = chip.dataset.label || chip.textContent.replace(/\s*\(\d+\)$/, '');
+    chip.dataset.label = label; // remember the plain label the first time
+    chip.textContent = `${label} (${chipCounts[key] ?? 0})`;
+  });
 
   if (filtered.length === 0) {
     listEl.innerHTML = `<div class="empty">Sin resultados</div>`;
@@ -454,6 +464,7 @@ function renderDetail() {
       } else {
         infoLine = 'Aún no revisado';
       }
+      const rutaTag = searching ? ` · Ruta ${escapeHtml(r.ruta || '—')}` : '';
       const showCorteBtn = s === 'no' || s === 'unk' || s === 'notificado';
       const showSubidoBtn = s === 'suspendido' && corte && !corte.subidoCortes;
       const subidoBadge = s === 'suspendido' && corte && corte.subidoCortes ? '<span class="uploaded-tag">📤 Reportado</span>' : '';
@@ -466,7 +477,7 @@ function renderDetail() {
       <div class="item" data-niu="${escapeHtml(r.niu)}">
         <div class="info">
           <div class="name">${escapeHtml(r.nombre || '(sin nombre)')}</div>
-          <div class="meta">NIU ${escapeHtml(r.niu)} · ${escapeHtml(r.direccion || '')}</div>
+          <div class="meta">NIU ${escapeHtml(r.niu)} · ${escapeHtml(r.direccion || '')}${rutaTag}</div>
           <div class="meta2">Medidor ${escapeHtml(r.medidor || '—')} · Sector ${escapeHtml(r.sector || '—')} · Atraso: ${escapeHtml(r.mesesAtrasados || '0')} · Saldo: ${escapeHtml(r.saldoPendiente || '—')}</div>
           <div class="meta3">${infoLine} ${subidoBadge}${compartidoBadge}</div>
         </div>
@@ -759,10 +770,10 @@ async function pollQueuedScan(jobId, statusEl, buttons) {
   }
 }
 
-// Only pendientes + sin revisar get (re)scanned — "al día" and "cortado" are skipped
+// Everything except "al día" gets (re)scanned — pendientes, sin revisar, notificados y suspendidos
 scanPendingBtn.addEventListener('click', () => {
   const niusList = currentRouteRows()
-    .filter((r) => { const s = statusOf(r.niu); return s === 'no' || s === 'unk'; })
+    .filter((r) => statusOf(r.niu) !== 'ok')
     .map((r) => r.niu);
   if (niusList.length === 0) {
     statusBar.textContent = 'No hay pendientes para revisar';
@@ -776,7 +787,7 @@ const routesStatusBar = document.getElementById('routesStatusBar');
 scanAllBtn.addEventListener('click', async () => {
   await Promise.all([syncSharedResults(), syncCortes()]);
   const niusList = excelRows
-    .filter((r) => { const s = statusOf(r.niu); return s === 'no' || s === 'unk'; })
+    .filter((r) => statusOf(r.niu) !== 'ok')
     .map((r) => r.niu);
   if (niusList.length === 0) {
     routesStatusBar.textContent = 'No hay pendientes en ninguna ruta 🎉';
@@ -950,11 +961,37 @@ function renderStatsRutas() {
     .join('');
 }
 
+async function syncSharedRowsWithRetry(maxAttempts, delayMs) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/data/rows`);
+      if (!res.ok) throw new Error('status ' + res.status);
+      const data = await res.json();
+      excelRows = Array.isArray(data.rows) ? data.rows : [];
+      saveRows();
+      return true; // reached the backend — whatever it says (even 0 rows) is authoritative
+    } catch (e) {
+      if (attempt < maxAttempts) await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  return false; // never reached the backend — fall back to whatever's cached locally
+}
+
 // ---------- Init ----------
 loadAll();
 (async () => {
-  await syncSharedRows(); // pulls the shared Excel from the server if available, overwriting local cache
+  uploadStatus.textContent = 'Conectando con el servidor...';
+  uploadStatus.className = 'upload-status';
+  // Render's free tier can take 30-50s to wake up on the first request of the
+  // day — retry a few times before concluding there's really no data yet,
+  // instead of immediately forcing a fresh device to upload its own file.
+  const reached = await syncSharedRowsWithRetry(6, 6000);
+  uploadStatus.textContent = '';
   if (excelRows.length === 0) {
+    if (!reached) {
+      uploadStatus.textContent = 'No se pudo conectar con el servidor. Revisa tu conexión, o sube un archivo para empezar.';
+      uploadStatus.className = 'upload-status error';
+    }
     showView('upload');
   } else if (selectedRoute) {
     goToDetail();
