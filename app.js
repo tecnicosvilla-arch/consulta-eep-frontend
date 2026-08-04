@@ -473,10 +473,14 @@ function renderDetail() {
       const showCompartirBtn = s === 'ok' && scan && scan.numeroFactura && !yaCompartido;
       const compartidoBadge = yaCompartido ? '<span class="uploaded-tag">✅ Compartido</span>' : '';
 
+      const atraso = parseInt(r.mesesAtrasados, 10) || 0;
+      const nameClass = atraso === 0 ? 'name-atraso-0' : atraso === 1 ? 'name-atraso-1' : 'name-atraso-2';
+      const corteBtnClass = showCorteBtn && atraso >= 2 ? 'corte-btn corte-btn-urgent' : 'corte-btn';
+
       return `
       <div class="item" data-niu="${escapeHtml(r.niu)}">
         <div class="info">
-          <div class="name">${escapeHtml(r.nombre || '(sin nombre)')}</div>
+          <div class="name ${nameClass}">${escapeHtml(r.nombre || '(sin nombre)')}</div>
           <div class="meta">NIU ${escapeHtml(r.niu)} · ${escapeHtml(r.direccion || '')}${rutaTag}</div>
           <div class="meta2">Medidor ${escapeHtml(r.medidor || '—')} · Sector ${escapeHtml(r.sector || '—')} · Atraso: ${escapeHtml(r.mesesAtrasados || '0')} · Saldo: ${escapeHtml(r.saldoPendiente || '—')}</div>
           <div class="meta3">${infoLine} ${subidoBadge}${compartidoBadge}</div>
@@ -484,7 +488,7 @@ function renderDetail() {
         <div class="item-actions">
           <div class="badge ${badgeClass}">${badgeLabel}</div>
           <button class="recheck-btn" data-niu="${escapeHtml(r.niu)}">🔄 Revisar</button>
-          ${showCorteBtn ? `<button class="corte-btn" data-niu="${escapeHtml(r.niu)}">✂️ Suspender</button>` : ''}
+          ${showCorteBtn ? `<button class="${corteBtnClass}" data-niu="${escapeHtml(r.niu)}">✂️ Suspender</button>` : ''}
           ${showSubidoBtn ? `<button class="subido-btn" data-id="${escapeHtml(corte.id)}">📤 Marcar subido a cortes</button>` : ''}
           ${showCompartirBtn ? `<button class="compartir-btn" data-niu="${escapeHtml(r.niu)}">📤 Compartir comprobante</button>` : ''}
         </div>
@@ -547,7 +551,7 @@ function drawVoucherCanvas(row, scan) {
   ctx.font = 'bold 30px Arial';
   ctx.fillText('Comprobante de Pago', PAD, 55);
   ctx.font = '16px Arial';
-  ctx.fillText('Consulta EEP', PAD, 85);
+  ctx.fillText(String(row.ruta ? `Ruta ${row.ruta}` : 'Consulta EEP'), PAD, 85);
 
   // Body
   let y = headerHeight + 34;
@@ -580,13 +584,7 @@ async function compartirComprobante(niu, btn) {
   const scan = scanResults[niu];
   if (!row || !scan) return;
 
-  let liniero = getSavedLiniero();
-  if (!liniero) {
-    liniero = window.prompt('Tu nombre (liniero que comparte el comprobante):', '') || '';
-    if (!liniero.trim()) return;
-    saveLiniero(liniero.trim());
-    liniero = liniero.trim();
-  }
+  const liniero = rutaLinieros[row.ruta] || getSavedLiniero() || 'Sin asignar';
 
   btn.disabled = true;
   btn.textContent = 'Generando...';
@@ -650,6 +648,20 @@ function nowAsHHMM() {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
+function allKnownLinieros() {
+  const names = Array.from(new Set(Object.values(rutaLinieros).filter((n) => n && n.trim())));
+  names.sort((a, b) => a.localeCompare(b, 'es'));
+  return names;
+}
+
+function populateLinieroSelect(defaultName) {
+  const names = allKnownLinieros();
+  if (defaultName && !names.includes(defaultName)) names.unshift(defaultName);
+  if (names.length === 0) names.push('Sin asignar');
+  corteLinieroInput.innerHTML = names.map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');
+  corteLinieroInput.value = defaultName && names.includes(defaultName) ? defaultName : names[0];
+}
+
 function openCorteModal(niu) {
   const row = excelRows.find((r) => r.niu === niu);
   if (!row) return;
@@ -659,7 +671,8 @@ function openCorteModal(niu) {
   corteModalDireccion.textContent = row.direccion || '—';
   corteTipoSelect.value = 'poste';
   corteHoraInput.value = nowAsHHMM();
-  corteLinieroInput.value = getSavedLiniero();
+  // Defaults to the route's assigned liniero — pick another from the list only if needed.
+  populateLinieroSelect(rutaLinieros[row.ruta] || getSavedLiniero());
   corteModalOverlay.style.display = 'flex';
 }
 
@@ -671,11 +684,8 @@ function closeCorteModal() {
 corteCancelBtn.addEventListener('click', closeCorteModal);
 
 corteConfirmBtn.addEventListener('click', async () => {
-  const liniero = corteLinieroInput.value.trim();
-  if (!liniero) {
-    corteLinieroInput.style.borderColor = '#dc2626';
-    return;
-  }
+  const liniero = corteLinieroInput.value;
+  if (!liniero) return;
   if (!pendingCorteRow) return;
   corteConfirmBtn.disabled = true;
   corteConfirmBtn.textContent = 'Guardando...';

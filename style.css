@@ -170,6 +170,9 @@ main { padding: 14px; }
 }
 .item .info { min-width: 0; flex: 1; }
 .item .name { font-weight: 600; font-size: 0.95rem; }
+.item .name.name-atraso-0 { color: #86efac; }
+.item .name.name-atraso-1 { color: #fde047; }
+.item .name.name-atraso-2 { color: #f87171; }
 .item .meta { font-size: 0.78rem; color: var(--muted); margin-top: 2px; }
 .item .meta2 { font-size: 0.76rem; color: var(--muted); margin-top: 2px; }
 .item .meta3 { font-size: 0.76rem; color: #93c5fd; margin-top: 4px; }
@@ -199,6 +202,14 @@ main { padding: 14px; }
   border-radius: 8px;
   padding: 5px 9px;
   font-size: 0.78rem;
+}
+
+.corte-btn-urgent {
+  animation: pulseUrgent 1.2s ease-in-out infinite;
+}
+@keyframes pulseUrgent {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(220,38,38,0.55); }
+  50% { box-shadow: 0 0 0 6px rgba(220,38,38,0); }
 }
 
 .subido-btn {
