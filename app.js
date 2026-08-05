@@ -61,17 +61,33 @@ function normalizeHeader(h) {
     .trim();
 }
 
-function normalizeRows(rawRows) {
-  return rawRows
+function normalizeRows(rows2d) {
+  if (!Array.isArray(rows2d) || rows2d.length === 0) return [];
+  const headerRow = rows2d[0].map((h) => normalizeHeader(h));
+  const dataRows = rows2d.slice(1);
+
+  return dataRows
     .map((raw) => {
       const row = {};
-      Object.keys(raw).forEach((key) => {
-        const mapped = HEADER_MAP[normalizeHeader(key)];
-        if (mapped) row[mapped] = String(raw[key]).trim();
+      const phones = []; // acumula, en orden de aparición, cualquier columna "telefono" o "celular"
+      headerRow.forEach((h, idx) => {
+        const value = String(raw[idx] ?? '').trim();
+        if (!value) return;
+        if (h === 'telefono' || h === 'celular') {
+          phones.push(value);
+          return;
+        }
+        const mapped = HEADER_MAP[h];
+        if (mapped) row[mapped] = value;
       });
+      // El Excel a veces trae "TELEFONO" y "CELULAR", o "TELEFONO" repetido dos
+      // veces — en ambos casos son números celulares. Se guardan en orden de
+      // aparición: el primero como "telefono", el segundo (si existe) como "celular".
+      if (phones[0]) row.telefono = phones[0];
+      if (phones[1]) row.celular = phones[1];
       return row;
     })
-    .filter((r) => r.niu); // discard rows without a NIU — unusable
+    .filter((r) => r.niu); // descarta filas sin NIU — inutilizables
 }
 
 function parseExcelFile(file) {
@@ -82,8 +98,10 @@ function parseExcelFile(file) {
         const data = new Uint8Array(e.target.result);
         const workbook = XLSX.read(data, { type: 'array' });
         const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        const json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-        resolve(json);
+        // header: 1 => filas como arrays posicionales, no objetos — necesario
+        // para no perder columnas cuando el Excel repite el mismo encabezado.
+        const rows2d = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', blankrows: false });
+        resolve(rows2d);
       } catch (err) {
         reject(err);
       }
@@ -139,17 +157,20 @@ fileInput.addEventListener('change', async (e) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rows: normalized }),
       });
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        throw new Error(`El servidor respondió ${res.status}. ${errText.slice(0, 150)}`);
+      }
       const data = await res.json();
+      if (!data.ok) throw new Error(data.message || 'El servidor no pudo procesar el archivo');
       uploadStatus.textContent = `Listo: ${data.nuevos} nuevas, ${data.actualizados} actualizadas, ${data.total} en total ✅`;
       await syncSharedRows();
     } catch (shareErr) {
-      // offline fallback: merge locally only
-      const byNiu = {};
-      excelRows.forEach((r) => { byNiu[r.niu] = r; });
-      normalized.forEach((r) => { byNiu[r.niu] = r; });
-      excelRows = Object.values(byNiu);
-      saveRows();
-      uploadStatus.textContent = `${normalized.length} filas leídas (sin conexión — no se compartió con el servidor)`;
+      // Error real del servidor (o sin conexión) — se lo mostramos claro al
+      // usuario en vez de guardar solo localmente sin que se note.
+      uploadStatus.textContent = `❌ No se pudo subir al servidor: ${shareErr.message}. Los datos NO se compartieron — intenta de nuevo.`;
+      uploadStatus.className = 'upload-status error';
+      return;
     }
     uploadStatus.className = 'upload-status ok';
     setTimeout(() => goToRoutes(), 700);
@@ -484,6 +505,7 @@ function renderDetail() {
           <div class="meta">NIU ${escapeHtml(r.niu)} · ${escapeHtml(r.direccion || '')}${rutaTag}</div>
           <div class="meta2">Medidor ${escapeHtml(r.medidor || '—')} · Sector ${escapeHtml(r.sector || '—')} · Atraso: ${escapeHtml(r.mesesAtrasados || '0')} · Saldo: ${escapeHtml(r.saldoPendiente || '—')}</div>
           <div class="meta3">${infoLine} ${subidoBadge}${compartidoBadge}</div>
+          <div class="meta4 phone-row">${renderPhoneField(r.niu, 'telefono', r.telefono)}${renderPhoneField(r.niu, 'celular', r.celular)}</div>
         </div>
         <div class="item-actions">
           <div class="badge ${badgeClass}">${badgeLabel}</div>
@@ -508,10 +530,27 @@ function renderDetail() {
   listEl.querySelectorAll('.compartir-btn').forEach((btn) => {
     btn.addEventListener('click', () => compartirComprobante(btn.dataset.niu, btn));
   });
+  listEl.querySelectorAll('.phone-input').forEach((input) => {
+    input.addEventListener('blur', () => {
+      const value = input.value.trim();
+      if (value) savePhoneNumber(input.dataset.niu, input.dataset.field, value);
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') input.blur();
+    });
+  });
 }
 
 function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function renderPhoneField(niu, field, value) {
+  const label = field === 'telefono' ? '📞' : '📱';
+  if (value) {
+    return `<a class="phone-link" href="tel:${escapeHtml(value)}">${label} ${escapeHtml(value)}</a>`;
+  }
+  return `<span class="phone-empty">${label} <input type="tel" class="phone-input" data-niu="${escapeHtml(niu)}" data-field="${field}" placeholder="Agregar ${field}..." /></span>`;
 }
 
 // ---------- Comprobante (voucher) generation + share ----------
@@ -724,6 +763,26 @@ async function marcarSubido(corteId) {
     renderDetail();
   } catch (e) {
     alert('No se pudo guardar — revisa tu conexión e intenta de nuevo.');
+  }
+}
+
+async function savePhoneNumber(niu, field, value) {
+  const payload = { niu };
+  payload[field] = value;
+  try {
+    const res = await fetch(`${BACKEND_URL}/api/data/telefono`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.message || 'Error desconocido');
+    const row = excelRows.find((r) => r.niu === niu);
+    if (row) row[field] = value;
+    saveRows();
+    renderDetail();
+  } catch (e) {
+    alert('No se pudo guardar el número — revisa tu conexión e intenta de nuevo.');
   }
 }
 
