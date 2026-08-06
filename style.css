@@ -317,3 +317,105 @@ main { padding: 14px; }
 
 .footer { text-align: center; color: var(--muted); font-size: 0.78rem; padding: 16px; }
 .empty { text-align: center; color: var(--muted); padding: 40px 20px; }
+
+/* ---------- Teléfono / celular ---------- */
+.meta4.phone-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.phone-filled,
+.phone-empty,
+.phone-editing {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(59,130,246,0.08);
+  border: 1px solid #1e3a8a;
+  border-radius: 8px;
+  padding: 4px 6px 4px 10px;
+}
+
+.phone-empty {
+  background: transparent;
+  border: 1px dashed #263049;
+  padding: 4px 10px;
+}
+
+.phone-link {
+  color: #93c5fd;
+  text-decoration: none;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+.phone-link:active { opacity: 0.65; }
+
+.phone-edit-btn,
+.phone-delete-btn,
+.phone-save-btn,
+.phone-cancel-btn,
+.phone-add-btn {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 0.85rem;
+  line-height: 1;
+  padding: 4px 5px;
+  border-radius: 6px;
+  color: var(--muted);
+}
+.phone-edit-btn:active,
+.phone-delete-btn:active,
+.phone-save-btn:active,
+.phone-cancel-btn:active,
+.phone-add-btn:active {
+  background: rgba(255,255,255,0.08);
+}
+
+.phone-delete-btn:hover { color: #f87171; }
+.phone-edit-btn:hover { color: #fbbf24; }
+
+.phone-add-btn {
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 0.78rem;
+  border: 1px dashed #1e3a8a;
+  padding: 4px 10px;
+  border-radius: 8px;
+}
+.phone-add-btn:active { background: rgba(59,130,246,0.12); }
+
+.phone-input {
+  border: 1px solid #263049;
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  padding: 5px 8px;
+  font-size: 0.82rem;
+  width: 130px;
+  outline: none;
+}
+.phone-input:focus {
+  border-color: var(--accent);
+}
+
+.phone-save-btn {
+  color: #4ade80;
+  font-size: 1rem;
+  font-weight: 700;
+}
+.phone-save-btn:hover { background: rgba(22,163,74,0.15); }
+
+.phone-cancel-btn {
+  color: #f87171;
+  font-size: 0.95rem;
+}
+.phone-cancel-btn:hover { background: rgba(220,38,38,0.15); }
+
+/* En pantallas angostas, que el input no se desborde */
+@media (max-width: 360px) {
+  .phone-input { width: 105px; }
+}

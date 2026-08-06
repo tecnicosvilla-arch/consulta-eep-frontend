@@ -15,6 +15,7 @@ let selectedRoute = null;
 let currentFilter = 'pendiente';
 let searchTerm = '';
 let pendingCorteRow = null; // row waiting for corte confirmation in the modal
+let editingPhone = null; // { niu, field } cuando se está editando/agregando un número
 
 function parseSpanishDateTime(str) {
   // Expects "DD-MES-YYYY hh:mmAM/PM" e.g. "08-JUL-2026 05:28PM"
@@ -80,11 +81,11 @@ function normalizeRows(rows2d) {
         const mapped = HEADER_MAP[h];
         if (mapped) row[mapped] = value;
       });
-      // El Excel a veces trae "TELEFONO" y "CELULAR", o "TELEFONO" repetido dos
-      // veces — en ambos casos son números celulares. Se guardan en orden de
-      // aparición: el primero como "telefono", el segundo (si existe) como "celular".
-      if (phones[0]) row.telefono = phones[0];
-      if (phones[1]) row.celular = phones[1];
+      // Descarta "0", "00", "000...", vacíos, etc. — no son números reales,
+      // así el campo queda disponible para registrar uno válido después.
+      const validPhones = phones.filter((p) => !/^0+$/.test(p));
+      if (validPhones[0]) row.telefono = validPhones[0];
+      if (validPhones[1]) row.celular = validPhones[1];
       return row;
     })
     .filter((r) => r.niu); // descarta filas sin NIU — inutilizables
@@ -530,15 +531,72 @@ function renderDetail() {
   listEl.querySelectorAll('.compartir-btn').forEach((btn) => {
     btn.addEventListener('click', () => compartirComprobante(btn.dataset.niu, btn));
   });
-  listEl.querySelectorAll('.phone-input').forEach((input) => {
-    input.addEventListener('blur', () => {
-      const value = input.value.trim();
-      if (value) savePhoneNumber(input.dataset.niu, input.dataset.field, value);
-    });
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') input.blur();
+  // "+ Agregar" abre el campo de edición (input + botón ✓)
+  listEl.querySelectorAll('.phone-add-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      editingPhone = { niu: btn.dataset.niu, field: btn.dataset.field };
+      renderDetail();
+      focusPhoneInput();
     });
   });
+
+  // ✏️ Editar abre el mismo campo, pre-llenado con el valor actual
+  listEl.querySelectorAll('.phone-edit-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      editingPhone = { niu: btn.dataset.niu, field: btn.dataset.field };
+      renderDetail();
+      focusPhoneInput();
+    });
+  });
+
+  // ✕ Cancelar cierra el campo sin guardar
+  listEl.querySelectorAll('.phone-cancel-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      editingPhone = null;
+      renderDetail();
+    });
+  });
+
+  // ✓ Guardar — solo aquí se envía al servidor, nunca automáticamente
+  listEl.querySelectorAll('.phone-save-btn').forEach((btn) => {
+    btn.addEventListener('click', () => confirmPhoneEdit(btn.dataset.niu, btn.dataset.field));
+  });
+
+  // Enter dentro del campo también guarda (equivalente a tocar ✓)
+  listEl.querySelectorAll('.phone-input').forEach((input) => {
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') confirmPhoneEdit(input.dataset.niu, input.dataset.field);
+      if (e.key === 'Escape') { editingPhone = null; renderDetail(); }
+    });
+  });
+
+  // 🗑️ Eliminar — pide confirmación (ej. cliente dijo que el número está mal)
+  listEl.querySelectorAll('.phone-delete-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const ok = window.confirm('¿Eliminar este número? Podrás agregar uno nuevo después.');
+      if (ok) savePhoneNumber(btn.dataset.niu, btn.dataset.field, '');
+    });
+  });
+}
+
+function focusPhoneInput() {
+  // El input recién se creó al re-renderizar — hay que esperar al siguiente frame
+  setTimeout(() => {
+    const input = listEl.querySelector('.phone-input');
+    if (input) { input.focus(); input.select(); }
+  }, 0);
+}
+
+function confirmPhoneEdit(niu, field) {
+  const input = listEl.querySelector(`.phone-input[data-niu="${CSS.escape(niu)}"][data-field="${field}"]`);
+  if (!input) return;
+  const value = input.value.trim();
+  editingPhone = null;
+  if (/^0+$/.test(value)) {
+    alert('Ese número no es válido (solo ceros). Inténtalo de nuevo.');
+    return;
+  }
+  savePhoneNumber(niu, field, value); // value puede ser '' si borró todo el texto y confirmó — equivale a eliminar
 }
 
 function escapeHtml(str) {
@@ -547,10 +605,29 @@ function escapeHtml(str) {
 
 function renderPhoneField(niu, field, value) {
   const label = field === 'telefono' ? '📞' : '📱';
-  if (value) {
-    return `<a class="phone-link" href="tel:${escapeHtml(value)}">${label} ${escapeHtml(value)}</a>`;
+  const isEditing = editingPhone && editingPhone.niu === niu && editingPhone.field === field;
+
+  if (isEditing) {
+    return `<span class="phone-editing">
+      ${label}
+      <input type="tel" class="phone-input" data-niu="${escapeHtml(niu)}" data-field="${field}" value="${escapeHtml(value || '')}" placeholder="Número..." />
+      <button class="phone-save-btn" data-niu="${escapeHtml(niu)}" data-field="${field}" title="Guardar">✓</button>
+      <button class="phone-cancel-btn" title="Cancelar">✕</button>
+    </span>`;
   }
-  return `<span class="phone-empty">${label} <input type="tel" class="phone-input" data-niu="${escapeHtml(niu)}" data-field="${field}" placeholder="Agregar ${field}..." /></span>`;
+
+  if (value) {
+    return `<span class="phone-filled">
+      <a class="phone-link" href="tel:${escapeHtml(value)}">${label} ${escapeHtml(value)}</a>
+      <button class="phone-edit-btn" data-niu="${escapeHtml(niu)}" data-field="${field}" title="Editar">✏️</button>
+      <button class="phone-delete-btn" data-niu="${escapeHtml(niu)}" data-field="${field}" title="Eliminar">🗑️</button>
+    </span>`;
+  }
+
+  return `<span class="phone-empty">
+    ${label}
+    <button class="phone-add-btn" data-niu="${escapeHtml(niu)}" data-field="${field}">+ Agregar</button>
+  </span>`;
 }
 
 // ---------- Comprobante (voucher) generation + share ----------
@@ -778,7 +855,7 @@ async function savePhoneNumber(niu, field, value) {
     const data = await res.json();
     if (!data.ok) throw new Error(data.message || 'Error desconocido');
     const row = excelRows.find((r) => r.niu === niu);
-    if (row) row[field] = value;
+    if (row) row[field] = value || undefined;
     saveRows();
     renderDetail();
   } catch (e) {
