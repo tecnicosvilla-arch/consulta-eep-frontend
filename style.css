@@ -419,3 +419,7 @@ main { padding: 14px; }
 @media (max-width: 360px) {
   .phone-input { width: 105px; }
 }
+
+.route-money-row { font-weight: 700; }
+.route-money-row.recaudado span:last-child { color: #4ade80; }
+.route-money-row.porrecaudar span:last-child { color: #fbbf24; }

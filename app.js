@@ -599,15 +599,31 @@ function confirmPhoneEdit(niu, field) {
   savePhoneNumber(niu, field, value); // value puede ser '' si borró todo el texto y confirmó — equivale a eliminar
 }
 
+function parseMoneyValue(value) {
+  if (value === null || value === undefined || value === '') return 0;
+  let s = String(value).trim().replace(/[^\d.,-]/g, '');
+  if (!s) return 0;
+  if (s.includes(',') && s.includes('.')) {
+    // "100.000,50" -> punto = miles, coma = decimales
+    s = s.replace(/\./g, '').replace(',', '.');
+  } else if (s.includes(',')) {
+    // "100000,50" -> coma = decimales
+    s = s.replace(',', '.');
+  } else {
+    // "100.000" -> punto = miles (grupos de 3 dígitos)
+    s = s.replace(/\.(?=\d{3}(\D|$))/g, '');
+  }
+  const num = parseFloat(s);
+  return isNaN(num) ? 0 : num;
+}
+
 function formatMoney(value) {
   if (value === null || value === undefined || value === '') return '—';
-  // Extrae solo los dígitos (el Excel puede traer "100000", "$100.000",
-  // "100,000.50", etc. — nos quedamos con la parte entera en cualquier caso).
-  const digits = String(value).replace(/[^\d]/g, '');
-  if (!digits) return '—';
-  const num = parseInt(digits, 10);
-  if (isNaN(num)) return '—';
-  return '$ ' + num.toLocaleString('es-CO');
+  return formatMoneyFromNumber(parseMoneyValue(value));
+}
+
+function formatMoneyFromNumber(num) {
+  return '$ ' + Math.round(num || 0).toLocaleString('es-CO');
 }
 
 function escapeHtml(str) {
@@ -1079,7 +1095,7 @@ function renderStatsRutas() {
   const counts = {};
   excelRows.forEach((r) => {
     const ruta = r.ruta || '(sin ruta)';
-    if (!counts[ruta]) counts[ruta] = { total: 0, ok: 0, no: 0, unk: 0, notificado: 0, suspendido: 0 };
+    if (!counts[ruta]) counts[ruta] = { total: 0, ok: 0, no: 0, unk: 0, notificado: 0, suspendido: 0, recaudado: 0, porRecaudar: 0 };
     counts[ruta].total++;
     const s = evaluarEstado(r.niu).status;
     if (s === 'ok') counts[ruta].ok++;
@@ -1087,6 +1103,13 @@ function renderStatsRutas() {
     else if (s === 'unk') counts[ruta].unk++;
     else if (s === 'notificado') counts[ruta].notificado++;
     else if (s === 'suspendido') counts[ruta].suspendido++;
+
+    const scan = scanResults[r.niu];
+    if (s === 'ok') {
+      if (scan && scan.valorPagado) counts[ruta].recaudado += parseMoneyValue(scan.valorPagado);
+    } else {
+      counts[ruta].porRecaudar += parseMoneyValue(r.saldoPendiente);
+    }
   });
 
   const rutas = Object.keys(counts).sort((a, b) => a.localeCompare(b, 'es', { numeric: true }));
@@ -1112,6 +1135,8 @@ function renderStatsRutas() {
           <div class="route-pct-row"><span>🔴 Pendientes</span><span>${c.no + c.unk} (${pendientesPct}%)</span></div>
           <div class="route-pct-row"><span>📢 Notificados</span><span>${c.notificado} (${notificadosPct}%)</span></div>
           <div class="route-pct-row"><span>✂️ Suspendidos</span><span>${c.suspendido} (${suspendidosPct}%)</span></div>
+          <div class="route-pct-row route-money-row recaudado"><span>💰 Recaudado</span><span>${formatMoneyFromNumber(c.recaudado)}</span></div>
+          <div class="route-pct-row route-money-row porrecaudar"><span>⏳ Por recaudar</span><span>${formatMoneyFromNumber(c.porRecaudar)}</span></div>
         </div>
       </div>`;
     })
