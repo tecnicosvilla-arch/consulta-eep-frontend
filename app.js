@@ -504,7 +504,7 @@ function renderDetail() {
         <div class="info">
           <div class="name ${nameClass}">${escapeHtml(r.nombre || '(sin nombre)')}</div>
           <div class="meta">NIU ${escapeHtml(r.niu)} · ${escapeHtml(r.direccion || '')}${rutaTag}</div>
-          <div class="meta2">Medidor ${escapeHtml(r.medidor || '—')} · Sector ${escapeHtml(r.sector || '—')} · Atraso: ${escapeHtml(r.mesesAtrasados || '0')} · Saldo: ${escapeHtml(r.saldoPendiente || '—')}</div>
+          <div class="meta2">Medidor ${escapeHtml(r.medidor || '—')} · Sector ${escapeHtml(r.sector || '—')} · Atraso: ${escapeHtml(r.mesesAtrasados || '0')} · Saldo: ${formatMoney(r.saldoPendiente)}</div>
           <div class="meta3">${infoLine} ${subidoBadge}${compartidoBadge}</div>
           <div class="meta4 phone-row">${renderPhoneField(r.niu, 'telefono', r.telefono)}${renderPhoneField(r.niu, 'celular', r.celular)}</div>
         </div>
@@ -597,6 +597,17 @@ function confirmPhoneEdit(niu, field) {
     return;
   }
   savePhoneNumber(niu, field, value); // value puede ser '' si borró todo el texto y confirmó — equivale a eliminar
+}
+
+function formatMoney(value) {
+  if (value === null || value === undefined || value === '') return '—';
+  // Extrae solo los dígitos (el Excel puede traer "100000", "$100.000",
+  // "100,000.50", etc. — nos quedamos con la parte entera en cualquier caso).
+  const digits = String(value).replace(/[^\d]/g, '');
+  if (!digits) return '—';
+  const num = parseInt(digits, 10);
+  if (isNaN(num)) return '—';
+  return '$ ' + num.toLocaleString('es-CO');
 }
 
 function escapeHtml(str) {
