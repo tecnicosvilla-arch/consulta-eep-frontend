@@ -19,7 +19,7 @@
     <!-- VIEW 1: subir Excel -->
     <section id="view-upload" class="view">
       <div class="upload-box">
-        <p>Sube el archivo Excel/CSV con el listado de matrículas (no importa el orden de las columnas). Si ya había un listado, se combina — los NIU repetidos se actualizan con los datos nuevos, y los que no vengan en este archivo se conservan.</p>
+        <p>Sube el archivo Excel/CSV con el listado de matrículas (no importa el orden de las columnas). El nombre del archivo debe terminar en la fecha del listado, ej. "VILLAGARZÓN_04082026". Si ya había un listado de otro día, no se sobreescribe — cada día queda disponible por separado dentro de cada ruta.</p>
         <label class="file-label">
           📄 Elegir archivo
           <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" hidden />
@@ -45,6 +45,8 @@
     <section id="view-detail" class="view" style="display:none">
       <button id="backToRoutesBtn" class="back-btn">← Cambiar ruta</button>
       <h2 id="detailRouteTitle" class="section-title"></h2>
+
+      <div id="dayTabs" class="day-tabs"></div>
 
       <div class="controls">
         <input id="search" type="text" placeholder="Buscar por NIU o nombre..." autocomplete="off" />

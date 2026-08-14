@@ -102,6 +102,28 @@ main { padding: 14px; }
   margin-bottom: 6px;
 }
 
+/* ---------- Pestañas de día (Hoy / fechas / General) ---------- */
+.day-tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  margin-bottom: 12px;
+  -webkit-overflow-scrolling: touch;
+}
+.day-tab {
+  flex-shrink: 0;
+  padding: 8px 14px;
+  border-radius: 20px;
+  border: 1px solid #263049;
+  background: var(--card);
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.day-tab.active { background: var(--green); color: white; border-color: var(--green); }
+
 .controls { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
 
 #search {
@@ -180,6 +202,7 @@ main { padding: 14px; }
 .item-actions { flex-shrink: 0; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 .badge { padding: 6px 10px; border-radius: 8px; font-size: 0.76rem; font-weight: 700; white-space: nowrap; }
 .badge.ok { background: rgba(22,163,74,0.15); color: #4ade80; }
+.badge.ok-unconfirmed { background: rgba(251,191,36,0.15); color: #fbbf24; }
 .badge.no { background: rgba(220,38,38,0.15); color: #f87171; }
 .badge.unk { background: rgba(75,85,104,0.25); color: var(--muted); }
 .badge.suspendido { background: rgba(59,130,246,0.15); color: #93c5fd; }
@@ -225,6 +248,24 @@ main { padding: 14px; }
   border: 1px solid #1e3a8a;
   background: rgba(59,130,246,0.12);
   color: #93c5fd;
+  border-radius: 8px;
+  padding: 5px 9px;
+  font-size: 0.74rem;
+}
+
+.pagado-btn {
+  border: 1px solid #a16207;
+  background: rgba(251,191,36,0.1);
+  color: #fbbf24;
+  border-radius: 8px;
+  padding: 5px 9px;
+  font-size: 0.74rem;
+}
+
+.quitar-marca-btn {
+  border: 1px solid #263049;
+  background: transparent;
+  color: var(--muted);
   border-radius: 8px;
   padding: 5px 9px;
   font-size: 0.74rem;

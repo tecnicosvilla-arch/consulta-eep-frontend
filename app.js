@@ -6,12 +6,14 @@ const LS_ROUTE = 'eep_selected_route';
 const LS_RESULTS = 'eep_scan_results';
 const LS_LINIERO = 'eep_liniero_nombre';
 
-let excelRows = [];
-let scanResults = {}; // { [niu]: { pagado, ultimoPago, estadoPago, fechaRegistroPago, checkedAt, ... } }
+let excelRows = []; // cada fila trae ahora un campo `fecha` (YYYY-MM-DD) — el día del archivo del que vino
+let scanResults = {}; // { [niu]: { pagado, ultimoPago, estadoPago, fechaRegistroPago, checkedAt, ... } } — global por NIU
+let pagosManuales = {}; // { [niu]: { liniero, fecha } } — "cliente mostró que pagó" pero el portal aún no lo confirma
 let cortes = []; // [{ niu, nombre, direccion, ruta, liniero, tipo, fecha, subidoCortes }]
 let compartidos = []; // [{ niu, numeroFactura, fecha }]
 let rutaLinieros = {}; // { [ruta]: linieroName }
 let selectedRoute = null;
+let selectedDay = null; // 'YYYY-MM-DD' | 'general' — día activo dentro de la ruta actual
 let currentFilter = 'pendiente';
 let searchTerm = '';
 let pendingCorteRow = null; // row waiting for corte confirmation in the modal
@@ -29,6 +31,30 @@ function parseSpanishDateTime(str) {
   let hour = parseInt(hh, 10) % 12;
   if (ampm.toUpperCase() === 'PM') hour += 12;
   return new Date(parseInt(year, 10), mes, parseInt(day, 10), hour, parseInt(mm, 10));
+}
+
+function todayIso() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// Extrae la fecha del nombre del archivo, ej. "VILLAGARZÓN_04082026.xlsx" -> "2026-08-04"
+// Formato esperado: los últimos 8 dígitos del nombre (sin extensión) son DDMMYYYY.
+function extractFechaFromFilename(filename) {
+  const base = String(filename || '').replace(/\.[^.]+$/, '');
+  const match = base.match(/(\d{2})(\d{2})(\d{4})$/);
+  if (!match) return { fecha: todayIso(), detectada: false };
+  const dd = parseInt(match[1], 10);
+  const mm = parseInt(match[2], 10);
+  const yyyy = match[3];
+  if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return { fecha: todayIso(), detectada: false };
+  return { fecha: `${yyyy}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`, detectada: true };
+}
+
+function formatFechaCorta(fechaIso) {
+  // "2026-08-04" -> "04/08"
+  const [, m, d] = fechaIso.split('-');
+  return `${d}/${m}`;
 }
 
 // ---------- Column mapping (flexible — works regardless of column order/casing) ----------
@@ -125,6 +151,49 @@ function loadAll() {
   selectedRoute = localStorage.getItem(LS_ROUTE) || null;
 }
 
+// ---------- Helpers: NIU único ("general") ----------
+// Para una lista de filas (potencialmente con el mismo NIU en varios días),
+// devuelve una fila por NIU: la más reciente por fecha.
+function dedupeByNiuLatest(rows) {
+  const map = {};
+  rows.forEach((r) => {
+    const prev = map[r.niu];
+    if (!prev || (r.fecha || '') > (prev.fecha || '')) map[r.niu] = r;
+  });
+  return Object.values(map);
+}
+
+function rowsOfRoute(ruta) {
+  return excelRows.filter((r) => (r.ruta || '(sin ruta)') === ruta);
+}
+
+function generalRowsForRoute(ruta) {
+  return dedupeByNiuLatest(rowsOfRoute(ruta));
+}
+
+function generalRowsAll() {
+  return dedupeByNiuLatest(excelRows);
+}
+
+function datesForRoute(ruta) {
+  const set = new Set(rowsOfRoute(ruta).map((r) => r.fecha).filter(Boolean));
+  return Array.from(set).sort(); // ascendente
+}
+
+function defaultDayForRoute(ruta) {
+  const dates = datesForRoute(ruta);
+  if (dates.length === 0) return 'general';
+  const today = todayIso();
+  if (dates.includes(today)) return today;
+  return dates[dates.length - 1]; // el más reciente disponible
+}
+
+function currentRouteRowsForDay() {
+  if (!selectedRoute) return [];
+  if (selectedDay === 'general') return generalRowsForRoute(selectedRoute);
+  return rowsOfRoute(selectedRoute).filter((r) => r.fecha === selectedDay);
+}
+
 // ---------- View switching ----------
 function showView(name) {
   ['upload', 'routes', 'detail', 'stats'].forEach((v) => {
@@ -151,12 +220,16 @@ fileInput.addEventListener('change', async (e) => {
       return;
     }
 
-    uploadStatus.textContent = 'Combinando con el listado del servidor...';
+    const { fecha, detectada } = extractFechaFromFilename(file.name);
+    const fechaLabel = fecha === todayIso() ? 'Hoy' : formatFechaCorta(fecha);
+    uploadStatus.textContent = detectada
+      ? `Combinando con el listado del servidor (día ${fechaLabel})...`
+      : `No se detectó la fecha en el nombre del archivo — se usará hoy (${fechaLabel})...`;
     try {
       const res = await fetch(`${BACKEND_URL}/api/data/rows`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rows: normalized }),
+        body: JSON.stringify({ rows: normalized, fecha }),
       });
       if (!res.ok) {
         const errText = await res.text().catch(() => '');
@@ -164,7 +237,7 @@ fileInput.addEventListener('change', async (e) => {
       }
       const data = await res.json();
       if (!data.ok) throw new Error(data.message || 'El servidor no pudo procesar el archivo');
-      uploadStatus.textContent = `Listo: ${data.nuevos} nuevas, ${data.actualizados} actualizadas, ${data.total} en total ✅`;
+      uploadStatus.textContent = `Listo (día ${fechaLabel}): ${data.nuevos} nuevas, ${data.actualizados} actualizadas, ${data.total} NIU en total ✅`;
       await syncSharedRows();
     } catch (shareErr) {
       // Error real del servidor (o sin conexión) — se lo mostramos claro al
@@ -203,7 +276,9 @@ document.getElementById('resetMonthBtn').addEventListener('click', async () => {
     await fetch(`${BACKEND_URL}/api/reset-mes`, { method: 'POST' });
     excelRows = [];
     scanResults = {};
+    pagosManuales = {};
     selectedRoute = null;
+    selectedDay = null;
     saveRows();
     saveResults();
     saveRoute();
@@ -244,6 +319,16 @@ async function syncSharedResults() {
   }
 }
 
+async function syncPagosManuales() {
+  try {
+    const res = await fetch(`${BACKEND_URL}/api/pagos-manuales`);
+    const data = await res.json();
+    pagosManuales = data.pagosManuales && typeof data.pagosManuales === 'object' ? data.pagosManuales : {};
+  } catch (e) {
+    // offline — keep whatever we had
+  }
+}
+
 async function syncCortes() {
   try {
     const res = await fetch(`${BACKEND_URL}/api/cortes`);
@@ -279,13 +364,13 @@ async function goToRoutes() {
   showView('routes');
   await syncRutaLinieros();
   renderRoutesList();
-  subtitleText.textContent = `${excelRows.length} matrículas cargadas`;
+  subtitleText.textContent = `${generalRowsAll().length} matrículas cargadas`;
 }
 
 function renderRoutesList() {
   const routesList = document.getElementById('routesList');
   const counts = {};
-  excelRows.forEach((r) => {
+  generalRowsAll().forEach((r) => {
     const ruta = r.ruta || '(sin ruta)';
     counts[ruta] = (counts[ruta] || 0) + 1;
   });
@@ -343,6 +428,7 @@ function renderRoutesList() {
 
 // ---------- Detail screen ----------
 const detailRouteTitle = document.getElementById('detailRouteTitle');
+const dayTabsEl = document.getElementById('dayTabs');
 const listEl = document.getElementById('list');
 const statusBar = document.getElementById('statusBar');
 const lastUpdateEl = document.getElementById('lastUpdate');
@@ -356,10 +442,6 @@ document.getElementById('backToRoutesBtn').addEventListener('click', () => {
   goToRoutes();
 });
 
-function currentRouteRows() {
-  return excelRows.filter((r) => (r.ruta || '(sin ruta)') === selectedRoute);
-}
-
 function cortadoRecord(niu) {
   // most recent corte for this NIU, if any
   const matches = cortes.filter((c) => c.niu === niu);
@@ -367,38 +449,51 @@ function cortadoRecord(niu) {
   return matches.sort((a, b) => new Date(b.fecha) - new Date(a.fecha))[0];
 }
 
-// Returns { status: 'ok'|'no'|'unk'|'notificado'|'suspendido', pagado: bool, corteInvalido: bool }
+// Returns { status: 'ok'|'no'|'unk'|'notificado'|'suspendido', pagado, corteInvalido, sinConfirmar }
+// `sinConfirmar` = true cuando el "ok" viene de una marca manual (liniero dijo que
+// el cliente ya pagó) y el portal todavía no lo ha confirmado con un escaneo real.
 function evaluarEstado(niu) {
   const scan = scanResults[niu];
-  const pagado = !!(scan && scan.pagado);
+  const pagadoConfirmado = !!(scan && scan.pagado);
+  const manual = pagosManuales[niu];
+  const pagado = pagadoConfirmado || !!manual;
+  const sinConfirmar = !!manual && !pagadoConfirmado;
   const corte = cortadoRecord(niu);
 
   if (!corte) {
-    return { status: pagado ? 'ok' : (scan ? 'no' : 'unk'), pagado, corteInvalido: false };
+    return { status: pagado ? 'ok' : (scan ? 'no' : 'unk'), pagado, corteInvalido: false, sinConfirmar };
   }
 
   if (corte.tipo === 'notificacion') {
     // A notification never physically cuts service — paying makes it "al día"
     // straight away; otherwise it's its own distinct category, not "pendiente".
-    return { status: pagado ? 'ok' : 'notificado', pagado, corteInvalido: false };
+    return { status: pagado ? 'ok' : 'notificado', pagado, corteInvalido: false, sinConfirmar };
   }
 
   // Physical cut (poste/pin) — check whether the payment happened BEFORE the cut,
   // which would mean the cut was a mistake (customer had already paid) and doesn't apply.
+  // (Se usa solo el pago CONFIRMADO por el portal — la marca manual no trae hora exacta.)
   const corteTimestamp = new Date(corte.fecha);
   const pagoTimestamp = scan && scan.fechaRegistroPago ? parseSpanishDateTime(scan.fechaRegistroPago) : null;
 
-  if (pagado && pagoTimestamp && pagoTimestamp < corteTimestamp) {
-    return { status: 'ok', pagado: true, corteInvalido: true };
+  if (pagadoConfirmado && pagoTimestamp && pagoTimestamp < corteTimestamp) {
+    return { status: 'ok', pagado: true, corteInvalido: true, sinConfirmar: false };
   }
 
   // Valid suspension — stays classified as "suspendido" even if later paid
   // (needs manual reconnection), so we surface `pagado` separately.
-  return { status: 'suspendido', pagado, corteInvalido: false };
+  return { status: 'suspendido', pagado, corteInvalido: false, sinConfirmar };
 }
 
 function statusOf(niu) {
   return evaluarEstado(niu).status;
+}
+
+// Un NIU necesita volver a revisarse si NO está en "al día" confirmado de verdad
+// por el portal — un "al día" marcado manualmente (sin confirmar) sigue entrando.
+function needsScan(niu) {
+  const ev = evaluarEstado(niu);
+  return !(ev.status === 'ok' && !ev.sinConfirmar);
 }
 
 function compartidoRecord(niu, numeroFactura) {
@@ -406,25 +501,55 @@ function compartidoRecord(niu, numeroFactura) {
   return compartidos.find((c) => c.niu === niu && c.numeroFactura === numeroFactura) || null;
 }
 
+// Fila más reciente conocida de un NIU (para modales/comprobantes: siempre el dato más actual)
+function generalRowForNiu(niu) {
+  const rows = excelRows.filter((r) => r.niu === niu);
+  if (rows.length === 0) return null;
+  return rows.reduce((best, r) => (!best || (r.fecha || '') > (best.fecha || '') ? r : best), null);
+}
+
 function goToDetail() {
-  detailRouteTitle.textContent = `Ruta ${selectedRoute}`;
-  subtitleText.textContent = `Ruta ${selectedRoute}`;
+  selectedDay = defaultDayForRoute(selectedRoute);
   showView('detail');
-  Promise.all([syncSharedResults(), syncCortes(), syncCompartidos()]).then(renderDetail);
+  Promise.all([syncSharedResults(), syncPagosManuales(), syncCortes(), syncCompartidos()]).then(renderDetail);
   renderDetail();
 
   if (detailRefreshTimer) clearInterval(detailRefreshTimer);
   detailRefreshTimer = setInterval(() => {
-    Promise.all([syncSharedResults(), syncCortes(), syncCompartidos()]).then(renderDetail);
+    Promise.all([syncSharedResults(), syncPagosManuales(), syncCortes(), syncCompartidos()]).then(renderDetail);
   }, 20000); // pick up progress from other devices every 20s
 }
 
+function renderDayTabs() {
+  if (!dayTabsEl) return;
+  const dates = datesForRoute(selectedRoute);
+  const today = todayIso();
+  const tabs = dates.map((d) => ({ key: d, label: d === today ? 'Hoy' : formatFechaCorta(d) }));
+  tabs.push({ key: 'general', label: 'General' });
+
+  dayTabsEl.innerHTML = tabs
+    .map((t) => `<button class="day-tab ${selectedDay === t.key ? 'active' : ''}" data-day="${escapeHtml(t.key)}">${escapeHtml(t.label)}</button>`)
+    .join('');
+
+  dayTabsEl.querySelectorAll('.day-tab').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      selectedDay = btn.dataset.day;
+      renderDetail();
+    });
+  });
+}
+
 function renderDetail() {
+  detailRouteTitle.textContent = `Ruta ${selectedRoute}`;
+  const today = todayIso();
+  const dayLabel = selectedDay === 'general' ? 'Listado general' : (selectedDay === today ? 'Hoy' : formatFechaCorta(selectedDay));
+  subtitleText.textContent = `Ruta ${selectedRoute} · ${dayLabel}`;
+  renderDayTabs();
+
   const term = searchTerm.trim().toLowerCase();
   const searching = term.length > 0;
-  // A search looks across every route, ignoring the current route + status filter.
-  // Without a search, we stay scoped to the selected route as before.
-  const baseRows = searching ? excelRows : currentRouteRows();
+  // A search looks across every route (NIU único), ignoring la ruta/día seleccionados.
+  const baseRows = searching ? generalRowsAll() : currentRouteRowsForDay();
 
   const withStatus = baseRows.map((r) => ({ ...r, _eval: evaluarEstado(r.niu) }));
 
@@ -468,12 +593,15 @@ function renderDetail() {
   listEl.innerHTML = filtered
     .map((r) => {
       const s = r._eval.status;
-      const badgeClass = s === 'ok' ? 'ok' : s === 'no' ? 'no' : s === 'suspendido' ? 'suspendido' : s === 'notificado' ? 'notificado' : 'unk';
-      const badgeLabel = s === 'ok' ? '✅ Al día' : s === 'no' ? '❌ Pendiente' : s === 'suspendido' ? '✂️ Suspendido' : s === 'notificado' ? '📢 Notificado' : '⏳ Sin revisar';
+      const badgeClass = s === 'ok' ? (r._eval.sinConfirmar ? 'ok-unconfirmed' : 'ok') : s === 'no' ? 'no' : s === 'suspendido' ? 'suspendido' : s === 'notificado' ? 'notificado' : 'unk';
+      const badgeLabel = s === 'ok' ? (r._eval.sinConfirmar ? '⏳ Al día (sin confirmar)' : '✅ Al día') : s === 'no' ? '❌ Pendiente' : s === 'suspendido' ? '✂️ Suspendido' : s === 'notificado' ? '📢 Notificado' : '⏳ Sin revisar';
       const scan = scanResults[r.niu];
+      const manual = pagosManuales[r.niu];
       const corte = cortadoRecord(r.niu);
       let infoLine;
-      if (s === 'suspendido') {
+      if (r._eval.sinConfirmar) {
+        infoLine = `Marcado como pagado por ${escapeHtml(manual.liniero || 'liniero')} — pendiente de confirmar en el portal`;
+      } else if (s === 'suspendido') {
         infoLine = `Suspendido por ${escapeHtml(corte.liniero)} el ${new Date(corte.fecha).toLocaleString('es-CO')}`;
         if (r._eval.pagado) infoLine += ' · 💰 Ya pagó — falta reconexión';
       } else if (s === 'notificado') {
@@ -487,12 +615,15 @@ function renderDetail() {
         infoLine = 'Aún no revisado';
       }
       const rutaTag = searching ? ` · Ruta ${escapeHtml(r.ruta || '—')}` : '';
+      const diaTag = !searching && selectedDay === 'general' && r.fecha ? ` · ${r.fecha === today ? 'Hoy' : formatFechaCorta(r.fecha)}` : '';
       const showCorteBtn = s === 'no' || s === 'unk' || s === 'notificado';
+      const showPagadoBtn = (s === 'no' || s === 'unk' || s === 'notificado');
+      const showQuitarMarcaBtn = r._eval.sinConfirmar;
       const showSubidoBtn = s === 'suspendido' && corte && !corte.subidoCortes;
       const subidoBadge = s === 'suspendido' && corte && corte.subidoCortes ? '<span class="uploaded-tag">📤 Reportado</span>' : '';
 
-      const yaCompartido = s === 'ok' && scan && scan.numeroFactura ? compartidoRecord(r.niu, scan.numeroFactura) : null;
-      const showCompartirBtn = s === 'ok' && scan && scan.numeroFactura && !yaCompartido;
+      const yaCompartido = s === 'ok' && !r._eval.sinConfirmar && scan && scan.numeroFactura ? compartidoRecord(r.niu, scan.numeroFactura) : null;
+      const showCompartirBtn = s === 'ok' && !r._eval.sinConfirmar && scan && scan.numeroFactura && !yaCompartido;
       const compartidoBadge = yaCompartido ? '<span class="uploaded-tag">✅ Compartido</span>' : '';
 
       const atraso = parseInt(r.mesesAtrasados, 10) || 0;
@@ -503,7 +634,7 @@ function renderDetail() {
       <div class="item" data-niu="${escapeHtml(r.niu)}">
         <div class="info">
           <div class="name ${nameClass}">${escapeHtml(r.nombre || '(sin nombre)')}</div>
-          <div class="meta">NIU ${escapeHtml(r.niu)} · ${escapeHtml(r.direccion || '')}${rutaTag}</div>
+          <div class="meta">NIU ${escapeHtml(r.niu)} · ${escapeHtml(r.direccion || '')}${rutaTag}${diaTag}</div>
           <div class="meta2">Medidor ${escapeHtml(r.medidor || '—')} · Sector ${escapeHtml(r.sector || '—')} · Atraso: ${escapeHtml(r.mesesAtrasados || '0')} · Saldo: ${formatMoney(r.saldoPendiente)}</div>
           <div class="meta3">${infoLine} ${subidoBadge}${compartidoBadge}</div>
           <div class="meta4 phone-row">${renderPhoneField(r.niu, 'telefono', r.telefono)}${renderPhoneField(r.niu, 'celular', r.celular)}</div>
@@ -512,6 +643,8 @@ function renderDetail() {
           <div class="badge ${badgeClass}">${badgeLabel}</div>
           <button class="recheck-btn" data-niu="${escapeHtml(r.niu)}">🔄 Revisar</button>
           ${showCorteBtn ? `<button class="${corteBtnClass}" data-niu="${escapeHtml(r.niu)}">✂️ Suspender</button>` : ''}
+          ${showPagadoBtn ? `<button class="pagado-btn" data-niu="${escapeHtml(r.niu)}">💰 Pagó (sin confirmar)</button>` : ''}
+          ${showQuitarMarcaBtn ? `<button class="quitar-marca-btn" data-niu="${escapeHtml(r.niu)}">✕ Quitar marca</button>` : ''}
           ${showSubidoBtn ? `<button class="subido-btn" data-id="${escapeHtml(corte.id)}">📤 Marcar subido a cortes</button>` : ''}
           ${showCompartirBtn ? `<button class="compartir-btn" data-niu="${escapeHtml(r.niu)}">📤 Compartir comprobante</button>` : ''}
         </div>
@@ -524,6 +657,12 @@ function renderDetail() {
   });
   listEl.querySelectorAll('.corte-btn').forEach((btn) => {
     btn.addEventListener('click', () => openCorteModal(btn.dataset.niu));
+  });
+  listEl.querySelectorAll('.pagado-btn').forEach((btn) => {
+    btn.addEventListener('click', () => marcarPagadoSinConfirmar(btn.dataset.niu));
+  });
+  listEl.querySelectorAll('.quitar-marca-btn').forEach((btn) => {
+    btn.addEventListener('click', () => quitarMarcaPagado(btn.dataset.niu));
   });
   listEl.querySelectorAll('.subido-btn').forEach((btn) => {
     btn.addEventListener('click', () => marcarSubido(btn.dataset.id));
@@ -657,6 +796,35 @@ function renderPhoneField(niu, field, value) {
   </span>`;
 }
 
+// ---------- Marca manual "pagado sin confirmar" ----------
+async function marcarPagadoSinConfirmar(niu) {
+  const row = generalRowForNiu(niu);
+  const liniero = (row && rutaLinieros[row.ruta]) || getSavedLiniero() || null;
+  try {
+    await fetch(`${BACKEND_URL}/api/pagos-manuales`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ niu, liniero }),
+    });
+    await syncPagosManuales();
+    renderDetail();
+  } catch (e) {
+    alert('No se pudo guardar la marca — revisa tu conexión e intenta de nuevo.');
+  }
+}
+
+async function quitarMarcaPagado(niu) {
+  const ok = window.confirm('¿Quitar la marca de "pagado sin confirmar"? El NIU volverá a pendiente.');
+  if (!ok) return;
+  try {
+    await fetch(`${BACKEND_URL}/api/pagos-manuales/${encodeURIComponent(niu)}`, { method: 'DELETE' });
+    await syncPagosManuales();
+    renderDetail();
+  } catch (e) {
+    alert('No se pudo quitar la marca — revisa tu conexión e intenta de nuevo.');
+  }
+}
+
 // ---------- Comprobante (voucher) generation + share ----------
 function drawVoucherCanvas(row, scan) {
   const canvas = document.createElement('canvas');
@@ -723,7 +891,7 @@ function drawVoucherCanvas(row, scan) {
 }
 
 async function compartirComprobante(niu, btn) {
-  const row = excelRows.find((r) => r.niu === niu);
+  const row = generalRowForNiu(niu);
   const scan = scanResults[niu];
   if (!row || !scan) return;
 
@@ -806,7 +974,7 @@ function populateLinieroSelect(defaultName) {
 }
 
 function openCorteModal(niu) {
-  const row = excelRows.find((r) => r.niu === niu);
+  const row = generalRowForNiu(niu);
   if (!row) return;
   pendingCorteRow = row;
   corteModalNombre.textContent = row.nombre || '(sin nombre)';
@@ -881,8 +1049,8 @@ async function savePhoneNumber(niu, field, value) {
     });
     const data = await res.json();
     if (!data.ok) throw new Error(data.message || 'Error desconocido');
-    const row = excelRows.find((r) => r.niu === niu);
-    if (row) row[field] = value || undefined;
+    // El teléfono es global por NIU — se actualiza en TODAS las filas (todos los días) de ese NIU en memoria.
+    excelRows.forEach((r) => { if (r.niu === niu) r[field] = value || undefined; });
     saveRows();
     renderDetail();
   } catch (e) {
@@ -932,7 +1100,7 @@ async function pollQueuedScan(jobId, statusEl, buttons) {
         statusEl.textContent = 'Error: ' + data.error;
       } else {
         statusEl.textContent = 'Consulta completada';
-        await syncSharedResults();
+        await Promise.all([syncSharedResults(), syncPagosManuales()]);
         lastUpdateEl.textContent = `Última actualización: ${new Date().toLocaleString('es-CO')}`;
         renderDetail();
       }
@@ -943,10 +1111,11 @@ async function pollQueuedScan(jobId, statusEl, buttons) {
   }
 }
 
-// Everything except "al día" gets (re)scanned — pendientes, sin revisar, notificados y suspendidos
+// Se revisa el conjunto de NIU del día/vista actualmente seleccionada (día
+// concreto o "General" dentro de la ruta) — todo lo que no esté "al día" confirmado.
 scanPendingBtn.addEventListener('click', () => {
-  const niusList = currentRouteRows()
-    .filter((r) => statusOf(r.niu) !== 'ok')
+  const niusList = currentRouteRowsForDay()
+    .filter((r) => needsScan(r.niu))
     .map((r) => r.niu);
   if (niusList.length === 0) {
     statusBar.textContent = 'No hay pendientes para revisar';
@@ -958,9 +1127,10 @@ scanPendingBtn.addEventListener('click', () => {
 const scanAllBtn = document.getElementById('scanAllBtn');
 const routesStatusBar = document.getElementById('routesStatusBar');
 scanAllBtn.addEventListener('click', async () => {
-  await Promise.all([syncSharedResults(), syncCortes()]);
-  const niusList = excelRows
-    .filter((r) => statusOf(r.niu) !== 'ok')
+  await Promise.all([syncSharedResults(), syncPagosManuales(), syncCortes()]);
+  // Fuera de las rutas: siempre general (NIU único), sin importar el día.
+  const niusList = generalRowsAll()
+    .filter((r) => needsScan(r.niu))
     .map((r) => r.niu);
   if (niusList.length === 0) {
     routesStatusBar.textContent = 'No hay pendientes en ninguna ruta 🎉';
@@ -1003,7 +1173,7 @@ function monthLabel(key) {
 
 statsBtn.addEventListener('click', async () => {
   showView('stats');
-  await Promise.all([syncCortes(), syncCompartidos(), syncSharedResults()]);
+  await Promise.all([syncCortes(), syncCompartidos(), syncSharedResults(), syncPagosManuales()]);
   renderStats();
   renderStatsRutas();
 });
@@ -1093,7 +1263,7 @@ function renderStatsForMonth(key) {
 
 function renderStatsRutas() {
   const counts = {};
-  excelRows.forEach((r) => {
+  generalRowsAll().forEach((r) => {
     const ruta = r.ruta || '(sin ruta)';
     if (!counts[ruta]) counts[ruta] = { total: 0, ok: 0, no: 0, unk: 0, notificado: 0, suspendido: 0, recaudado: 0, porRecaudar: 0 };
     counts[ruta].total++;
