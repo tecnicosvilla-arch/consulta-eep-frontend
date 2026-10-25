@@ -11,8 +11,11 @@
 </head>
 <body>
   <header class="topbar">
-    <h1>Consulta EEP</h1>
-    <span class="subtitle" id="subtitleText">Sube tu listado para empezar</span>
+    <div class="topbar-text">
+      <h1>Consulta EEP</h1>
+      <span class="subtitle" id="subtitleText">Sube tu listado para empezar</span>
+    </div>
+    <button id="credBtn" class="icon-btn" title="Credenciales del portal Oracle" aria-label="Credenciales del portal Oracle">🔑</button>
   </header>
 
   <main>
@@ -112,6 +115,32 @@
     </div>
   </div>
 
+  <!-- Modal de credenciales del portal Oracle (se guardan cifradas solo en este celular) -->
+  <div id="credModalOverlay" class="modal-overlay" style="display:none">
+    <div class="modal-box">
+      <h3>Credenciales del portal Oracle</h3>
+      <p class="modal-line" id="credEstado"></p>
+
+      <div id="credCamposWrap">
+        <label class="modal-label" for="credUsuario">Usuario</label>
+        <input id="credUsuario" class="modal-input" type="text" autocomplete="off" autocapitalize="off" />
+
+        <label class="modal-label" for="credClave">Contraseña del portal</label>
+        <input id="credClave" class="modal-input" type="password" autocomplete="new-password" />
+      </div>
+
+      <label class="modal-label" for="credPin" id="credPinLabel">Clave de desbloqueo</label>
+      <input id="credPin" class="modal-input" type="password" autocomplete="off" />
+
+      <div id="credMsg" class="modal-line"></div>
+
+      <div class="modal-actions">
+        <button id="credCancelBtn" class="secondary-btn">Cerrar</button>
+        <button id="credEditBtn" class="secondary-btn" style="display:none">Cambiar</button>
+        <button id="credSaveBtn" class="primary-btn">💾 Guardar</button>
+      </div>
+    </div>
+  </div>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="app.js"></script>
 </body>

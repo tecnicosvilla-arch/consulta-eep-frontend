@@ -26,6 +26,26 @@ body {
   top: 0;
   z-index: 10;
 }
+.topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.topbar-text { min-width: 0; }
+.icon-btn {
+  background: rgba(255,255,255,0.18);
+  border: none;
+  border-radius: 10px;
+  font-size: 1.2rem;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+.modal-input {
+  width: 100%;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid #263049;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 1rem;
+  box-sizing: border-box;
+}
 .topbar h1 { margin: 0; font-size: 1.3rem; }
 .topbar .subtitle { font-size: 0.85rem; opacity: 0.85; }
 

@@ -223,29 +223,10 @@ fileInput.addEventListener('change', async (e) => {
     const { fecha, detectada } = extractFechaFromFilename(file.name);
     const fechaLabel = fecha === todayIso() ? 'Hoy' : formatFechaCorta(fecha);
     uploadStatus.textContent = detectada
-      ? `Combinando con el listado del servidor (día ${fechaLabel})...`
+      ? `Guardando el listado en este celular (día ${fechaLabel})...`
       : `No se detectó la fecha en el nombre del archivo — se usará hoy (${fechaLabel})...`;
-    try {
-      const res = await fetch(`${BACKEND_URL}/api/data/rows`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rows: normalized, fecha }),
-      });
-      if (!res.ok) {
-        const errText = await res.text().catch(() => '');
-        throw new Error(`El servidor respondió ${res.status}. ${errText.slice(0, 150)}`);
-      }
-      const data = await res.json();
-      if (!data.ok) throw new Error(data.message || 'El servidor no pudo procesar el archivo');
-      uploadStatus.textContent = `Listo (día ${fechaLabel}): ${data.nuevos} nuevas, ${data.actualizados} actualizadas, ${data.total} NIU en total ✅`;
-      await syncSharedRows();
-    } catch (shareErr) {
-      // Error real del servidor (o sin conexión) — se lo mostramos claro al
-      // usuario en vez de guardar solo localmente sin que se note.
-      uploadStatus.textContent = `❌ No se pudo subir al servidor: ${shareErr.message}. Los datos NO se compartieron — intenta de nuevo.`;
-      uploadStatus.className = 'upload-status error';
-      return;
-    }
+    const m = mergeRowsLocal(normalized, fecha);
+    uploadStatus.textContent = `Listo (día ${fechaLabel}): ${m.nuevos} nuevas, ${m.actualizados} actualizadas, ${m.total} NIU en total ✅`;
     uploadStatus.className = 'upload-status ok';
     setTimeout(() => goToRoutes(), 700);
   } catch (err) {
@@ -273,10 +254,10 @@ document.getElementById('resetMonthBtn').addEventListener('click', async () => {
   );
   if (!confirmado) return;
   try {
-    await fetch(`${BACKEND_URL}/api/reset-mes`, { method: 'POST' });
     excelRows = [];
     scanResults = {};
     pagosManuales = {};
+    lsSet(LS_PAGOS, pagosManuales);
     selectedRoute = null;
     selectedDay = null;
     saveRows();
@@ -289,74 +270,92 @@ document.getElementById('resetMonthBtn').addEventListener('click', async () => {
   }
 });
 
-// ---------- Shared data sync ----------
-async function syncSharedRows() {
+// ---------- Datos locales (todo queda en este celular) ----------
+const LS_PAGOS = 'eep_pagos_manuales';
+const LS_CORTES = 'eep_cortes';
+const LS_COMPARTIDOS = 'eep_compartidos';
+const LS_RUTA_LINIEROS = 'eep_ruta_linieros';
+const LS_MONTH = 'eep_data_month';
+
+function lsGet(key, fallback) {
   try {
-    const res = await fetch(`${BACKEND_URL}/api/data/rows`);
-    const data = await res.json();
-    // Always mirror the server exactly (including empty, e.g. right after a
-    // monthly reset) — a conditional "only update if non-empty" left stale
-    // cached data stuck forever on devices that already had something loaded.
-    excelRows = Array.isArray(data.rows) ? data.rows : [];
-    saveRows();
-    return excelRows.length > 0;
-  } catch (e) {
-    // offline or backend down — keep whatever is cached locally
-  }
-  return false;
+    const v = JSON.parse(localStorage.getItem(key));
+    return v === null || v === undefined ? fallback : v;
+  } catch (e) { return fallback; }
+}
+function lsSet(key, value) { localStorage.setItem(key, JSON.stringify(value)); }
+
+function currentMonthKey() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
-async function syncSharedResults() {
-  try {
-    const res = await fetch(`${BACKEND_URL}/api/results`);
-    const data = await res.json();
-    // Full replace, not merge — the server is authoritative, so a reset there
-    // (new month) must actually clear stale local results too.
-    scanResults = data.results && typeof data.results === 'object' ? data.results : {};
-    saveResults();
-  } catch (e) {
-    // offline — keep local results
+// El listado, los resultados y las marcas manuales se reinician cada mes; los
+// cortes y comprobantes compartidos se conservan para los reportes.
+function checkMonthRollover() {
+  const now = currentMonthKey();
+  const stored = localStorage.getItem(LS_MONTH);
+  if (stored && stored !== now) {
+    [LS_ROWS, LS_RESULTS, LS_PAGOS, LS_ROUTE].forEach((k) => localStorage.removeItem(k));
   }
+  localStorage.setItem(LS_MONTH, now);
 }
 
-async function syncPagosManuales() {
-  try {
-    const res = await fetch(`${BACKEND_URL}/api/pagos-manuales`);
-    const data = await res.json();
-    pagosManuales = data.pagosManuales && typeof data.pagosManuales === 'object' ? data.pagosManuales : {};
-  } catch (e) {
-    // offline — keep whatever we had
-  }
+// Combina el listado subido con lo que ya hay: cada día es su propia "foto"; el
+// teléfono/celular se hereda de la última versión conocida del NIU.
+function mergeRowsLocal(rows, fecha) {
+  const latestByNiu = {};
+  excelRows.forEach((r) => {
+    if (!latestByNiu[r.niu] || (r.fecha || '') > (latestByNiu[r.niu].fecha || '')) latestByNiu[r.niu] = r;
+  });
+  const existingForDate = new Set(excelRows.filter((r) => r.fecha === fecha).map((r) => r.niu));
+  let nuevos = 0;
+  let actualizados = 0;
+  const merged = rows.map((r) => {
+    if (existingForDate.has(r.niu)) actualizados++; else nuevos++;
+    const out = { ...r, fecha };
+    const carry = latestByNiu[r.niu];
+    if (!out.telefono && carry && carry.telefono) out.telefono = carry.telefono;
+    if (!out.celular && carry && carry.celular) out.celular = carry.celular;
+    return out;
+  });
+  const replaced = new Set(merged.map((r) => r.niu));
+  excelRows = excelRows.filter((r) => !(r.fecha === fecha && replaced.has(r.niu))).concat(merged);
+  saveRows();
+  return { nuevos, actualizados, total: new Set(excelRows.map((r) => r.niu)).size };
 }
 
-async function syncCortes() {
-  try {
-    const res = await fetch(`${BACKEND_URL}/api/cortes`);
-    const data = await res.json();
-    cortes = data.cortes || [];
-  } catch (e) {
-    // offline — keep whatever we had
-  }
-}
+async function syncSharedRows() { excelRows = lsGet(LS_ROWS, []); }
+async function syncSharedResults() { scanResults = lsGet(LS_RESULTS, {}); }
+async function syncPagosManuales() { pagosManuales = lsGet(LS_PAGOS, {}); }
+async function syncCortes() { cortes = lsGet(LS_CORTES, []); }
+async function syncCompartidos() { compartidos = lsGet(LS_COMPARTIDOS, []); }
+async function syncRutaLinieros() { rutaLinieros = lsGet(LS_RUTA_LINIEROS, {}); }
 
-async function syncCompartidos() {
-  try {
-    const res = await fetch(`${BACKEND_URL}/api/compartidos`);
-    const data = await res.json();
-    compartidos = data.compartidos || [];
-  } catch (e) {
-    // offline — keep whatever we had
-  }
-}
-
-async function syncRutaLinieros() {
-  try {
-    const res = await fetch(`${BACKEND_URL}/api/rutas-linieros`);
-    const data = await res.json();
-    rutaLinieros = data.rutaLinieros || {};
-  } catch (e) {
-    // offline — keep whatever we had
-  }
+// Guarda en este celular lo que devolvió el servidor al terminar una consulta.
+async function applyScanResults(jobId) {
+  const res = await fetch(`${BACKEND_URL}/api/scan/results/${jobId}`);
+  const data = await res.json();
+  const checkedAt = new Date().toISOString();
+  (data.results || []).forEach((r) => {
+    if (String(r.ultimoPago || '').startsWith('ERROR:')) return;
+    scanResults[r.niu] = {
+      pagado: r.pagado,
+      ultimoPago: r.ultimoPago,
+      estadoPago: r.estadoPago,
+      fechaRegistroPago: r.fechaRegistroPago,
+      valorPagado: r.valorPagado,
+      medioPago: r.medioPago,
+      entidadRecaudo: r.entidadRecaudo,
+      numeroCuenta: r.numeroCuenta,
+      numeroFactura: r.numeroFactura,
+      checkedAt,
+    };
+    // Si el portal ya confirmó el pago, la marca manual deja de hacer falta.
+    if (r.pagado) delete pagosManuales[r.niu];
+  });
+  saveResults();
+  lsSet(LS_PAGOS, pagosManuales);
 }
 
 // ---------- Routes screen ----------
@@ -408,12 +407,8 @@ function renderRoutesList() {
       const liniero = input.value.trim();
       btn.textContent = '...';
       try {
-        await fetch(`${BACKEND_URL}/api/rutas-linieros`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ruta, liniero }),
-        });
         rutaLinieros[ruta] = liniero;
+        lsSet(LS_RUTA_LINIEROS, rutaLinieros);
         btn.textContent = '✅';
         setTimeout(() => { btn.textContent = 'Guardar'; }, 1200);
       } catch (err) {
@@ -801,11 +796,8 @@ async function marcarPagadoSinConfirmar(niu) {
   const row = generalRowForNiu(niu);
   const liniero = (row && rutaLinieros[row.ruta]) || getSavedLiniero() || null;
   try {
-    await fetch(`${BACKEND_URL}/api/pagos-manuales`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ niu, liniero }),
-    });
+    pagosManuales[niu] = { liniero, fecha: new Date().toISOString() };
+    lsSet(LS_PAGOS, pagosManuales);
     await syncPagosManuales();
     renderDetail();
   } catch (e) {
@@ -817,7 +809,8 @@ async function quitarMarcaPagado(niu) {
   const ok = window.confirm('¿Quitar la marca de "pagado sin confirmar"? El NIU volverá a pendiente.');
   if (!ok) return;
   try {
-    await fetch(`${BACKEND_URL}/api/pagos-manuales/${encodeURIComponent(niu)}`, { method: 'DELETE' });
+    delete pagosManuales[niu];
+    lsSet(LS_PAGOS, pagosManuales);
     await syncPagosManuales();
     renderDetail();
   } catch (e) {
@@ -926,11 +919,8 @@ async function compartirComprobante(niu, btn) {
     }
 
     if (shared) {
-      await fetch(`${BACKEND_URL}/api/compartidos`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ niu, numeroFactura: scan.numeroFactura, liniero }),
-      });
+      compartidos.push({ niu, numeroFactura: scan.numeroFactura || null, liniero: liniero || null, fecha: new Date().toISOString() });
+      lsSet(LS_COMPARTIDOS, compartidos);
       await syncCompartidos();
       renderDetail();
     }
@@ -994,6 +984,120 @@ function closeCorteModal() {
 
 corteCancelBtn.addEventListener('click', closeCorteModal);
 
+// ---------- Credenciales del portal Oracle ----------
+// Se guardan cifradas (AES-GCM, clave derivada con PBKDF2 de una "clave de desbloqueo")
+// solo en este celular. Se envían al servidor únicamente al iniciar una consulta,
+// por HTTPS, y el servidor no las guarda.
+const LS_CRED = 'eep_cred_vault';
+let credEnMemoria = null; // { usuario, clave } mientras la app esté abierta y desbloqueada
+let credResolver = null;
+let credModoEditar = false;
+
+const credModalOverlay = document.getElementById('credModalOverlay');
+const credUsuario = document.getElementById('credUsuario');
+const credClave = document.getElementById('credClave');
+const credPin = document.getElementById('credPin');
+const credPinLabel = document.getElementById('credPinLabel');
+const credCamposWrap = document.getElementById('credCamposWrap');
+const credEstado = document.getElementById('credEstado');
+const credMsg = document.getElementById('credMsg');
+const credSaveBtn = document.getElementById('credSaveBtn');
+const credEditBtn = document.getElementById('credEditBtn');
+
+const b64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
+const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+
+async function derivarLlave(pin, salt) {
+  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pin), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: 250000, hash: 'SHA-256' },
+    base,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
+
+async function cifrarCredenciales(cred, pin) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const llave = await derivarLlave(pin, salt);
+  const datos = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, llave, new TextEncoder().encode(JSON.stringify(cred)));
+  return { salt: b64(salt), iv: b64(iv), datos: b64(datos) };
+}
+
+async function descifrarCredenciales(boveda, pin) {
+  const llave = await derivarLlave(pin, unb64(boveda.salt));
+  const plano = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(boveda.iv) }, llave, unb64(boveda.datos));
+  return JSON.parse(new TextDecoder().decode(plano));
+}
+
+function leerBoveda() {
+  try { return JSON.parse(localStorage.getItem(LS_CRED)); } catch (e) { return null; }
+}
+
+function cerrarCredModal(resultado) {
+  credModalOverlay.style.display = 'none';
+  credPin.value = '';
+  credClave.value = '';
+  if (credResolver) { credResolver(resultado || null); credResolver = null; }
+}
+
+function mostrarCredModal(editar) {
+  const hayBoveda = !!leerBoveda();
+  credModoEditar = editar || !hayBoveda;
+  credCamposWrap.style.display = credModoEditar ? 'block' : 'none';
+  credEditBtn.style.display = !credModoEditar && hayBoveda ? 'block' : 'none';
+  credPinLabel.textContent = credModoEditar ? 'Crea una clave de desbloqueo' : 'Clave de desbloqueo';
+  credSaveBtn.textContent = credModoEditar ? '💾 Guardar' : '🔓 Desbloquear';
+  credEstado.textContent = credModoEditar
+    ? 'Se guardan cifradas solo en este celular. La clave de desbloqueo no se puede recuperar: si la olvidas, vuelve a escribir las credenciales.'
+    : 'Escribe tu clave de desbloqueo para usar las credenciales guardadas.';
+  credMsg.textContent = '';
+  credUsuario.value = '';
+  credClave.value = '';
+  credPin.value = '';
+  credModalOverlay.style.display = 'flex';
+}
+
+// Devuelve { usuario, clave } o null si el usuario cierra el modal sin desbloquear.
+function obtenerCredenciales() {
+  if (credEnMemoria) return Promise.resolve(credEnMemoria);
+  return new Promise((resolve) => {
+    credResolver = resolve;
+    mostrarCredModal(false);
+  });
+}
+
+document.getElementById('credBtn').addEventListener('click', () => mostrarCredModal(false));
+document.getElementById('credCancelBtn').addEventListener('click', () => cerrarCredModal(null));
+credEditBtn.addEventListener('click', () => mostrarCredModal(true));
+
+credSaveBtn.addEventListener('click', async () => {
+  const pin = credPin.value;
+  if (!pin) { credMsg.textContent = 'Escribe la clave de desbloqueo.'; return; }
+  credSaveBtn.disabled = true;
+  try {
+    if (credModoEditar) {
+      const usuario = credUsuario.value.trim();
+      const clave = credClave.value;
+      if (!usuario || !clave) { credMsg.textContent = 'Escribe el usuario y la contraseña del portal.'; return; }
+      if (pin.length < 4) { credMsg.textContent = 'La clave de desbloqueo debe tener al menos 4 caracteres.'; return; }
+      credMsg.textContent = 'Cifrando…';
+      localStorage.setItem(LS_CRED, JSON.stringify(await cifrarCredenciales({ usuario, clave }, pin)));
+      credEnMemoria = { usuario, clave };
+      cerrarCredModal(credEnMemoria);
+    } else {
+      credMsg.textContent = 'Desbloqueando…';
+      credEnMemoria = await descifrarCredenciales(leerBoveda(), pin);
+      cerrarCredModal(credEnMemoria);
+    }
+  } catch (e) {
+    credMsg.textContent = 'Clave de desbloqueo incorrecta.';
+  } finally {
+    credSaveBtn.disabled = false;
+  }
+});
 corteConfirmBtn.addEventListener('click', async () => {
   const liniero = corteLinieroInput.value;
   if (!liniero) return;
@@ -1001,19 +1105,24 @@ corteConfirmBtn.addEventListener('click', async () => {
   corteConfirmBtn.disabled = true;
   corteConfirmBtn.textContent = 'Guardando...';
   try {
-    await fetch(`${BACKEND_URL}/api/cortes`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        niu: pendingCorteRow.niu,
-        nombre: pendingCorteRow.nombre,
-        direccion: pendingCorteRow.direccion,
-        ruta: pendingCorteRow.ruta,
-        liniero,
-        tipo: corteTipoSelect.value,
-        hora: corteHoraInput.value,
-      }),
+    const ahora = new Date();
+    let fechaCorte = ahora;
+    if (corteHoraInput.value) {
+      const [h, mi] = corteHoraInput.value.split(':').map(Number);
+      fechaCorte = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate(), h, mi, 0);
+    }
+    cortes.push({
+      id: 'corte_' + ahora.getTime() + '_' + Math.random().toString(36).slice(2, 8),
+      niu: pendingCorteRow.niu,
+      nombre: pendingCorteRow.nombre || null,
+      direccion: pendingCorteRow.direccion || null,
+      ruta: pendingCorteRow.ruta || null,
+      liniero,
+      tipo: corteTipoSelect.value,
+      fecha: fechaCorte.toISOString(),
+      subidoCortes: false,
     });
+    lsSet(LS_CORTES, cortes);
     saveLiniero(liniero);
     await syncCortes();
     closeCorteModal();
@@ -1030,7 +1139,9 @@ async function marcarSubido(corteId) {
   const confirmado = window.confirm('¿Confirmas que ya realizaste el reporte de corte del servicio?');
   if (!confirmado) return;
   try {
-    await fetch(`${BACKEND_URL}/api/cortes/${corteId}/subido`, { method: 'POST' });
+    const c = cortes.find((x) => x.id === corteId);
+    if (c) c.subidoCortes = true;
+    lsSet(LS_CORTES, cortes);
     await syncCortes();
     renderDetail();
   } catch (e) {
@@ -1039,16 +1150,9 @@ async function marcarSubido(corteId) {
 }
 
 async function savePhoneNumber(niu, field, value) {
-  const payload = { niu };
-  payload[field] = value;
   try {
-    const res = await fetch(`${BACKEND_URL}/api/data/telefono`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const data = await res.json();
-    if (!data.ok) throw new Error(data.message || 'Error desconocido');
+    const limpio = value && !/^0+$/.test(value) ? value : null;
+    value = limpio;
     // El teléfono es global por NIU — se actualiza en TODAS las filas (todos los días) de ese NIU en memoria.
     excelRows.forEach((r) => { if (r.niu === niu) r[field] = value || undefined; });
     saveRows();
@@ -1064,13 +1168,18 @@ async function recheckSingle(niu) {
 }
 
 async function runQueuedScan(niusList, statusEl, buttons, routaLabel) {
+  const credenciales = await obtenerCredenciales();
+  if (!credenciales) {
+    statusEl.textContent = 'Necesitas las credenciales del portal (botón 🔑)';
+    return;
+  }
   statusEl.textContent = 'Iniciando consulta...';
   buttons.forEach((b) => { b.disabled = true; });
   try {
     const res = await fetch(`${BACKEND_URL}/api/scan/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ nius: niusList, ruta: routaLabel || selectedRoute }),
+      body: JSON.stringify({ nius: niusList, ruta: routaLabel || selectedRoute, credenciales }),
     });
     const data = await res.json();
     statusEl.textContent = data.message;
@@ -1100,7 +1209,7 @@ async function pollQueuedScan(jobId, statusEl, buttons) {
         statusEl.textContent = 'Error: ' + data.error;
       } else {
         statusEl.textContent = 'Consulta completada';
-        await Promise.all([syncSharedResults(), syncPagosManuales()]);
+        await applyScanResults(jobId);
         lastUpdateEl.textContent = `Última actualización: ${new Date().toLocaleString('es-CO')}`;
         renderDetail();
       }
@@ -1313,44 +1422,14 @@ function renderStatsRutas() {
     .join('');
 }
 
-async function syncSharedRowsWithRetry(maxAttempts, delayMs) {
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      const res = await fetch(`${BACKEND_URL}/api/data/rows`);
-      if (!res.ok) throw new Error('status ' + res.status);
-      const data = await res.json();
-      excelRows = Array.isArray(data.rows) ? data.rows : [];
-      saveRows();
-      return true; // reached the backend — whatever it says (even 0 rows) is authoritative
-    } catch (e) {
-      if (attempt < maxAttempts) await new Promise((r) => setTimeout(r, delayMs));
-    }
-  }
-  return false; // never reached the backend — fall back to whatever's cached locally
-}
-
 // ---------- Init ----------
+checkMonthRollover();
 loadAll();
-(async () => {
-  uploadStatus.textContent = 'Conectando con el servidor...';
-  uploadStatus.className = 'upload-status';
-  // Render's free tier can take 30-50s to wake up on the first request of the
-  // day — retry a few times before concluding there's really no data yet,
-  // instead of immediately forcing a fresh device to upload its own file.
-  const reached = await syncSharedRowsWithRetry(6, 6000);
-  uploadStatus.textContent = '';
-  if (excelRows.length === 0) {
-    if (!reached) {
-      uploadStatus.textContent = 'No se pudo conectar con el servidor. Revisa tu conexión, o sube un archivo para empezar.';
-      uploadStatus.className = 'upload-status error';
-    }
-    showView('upload');
-  } else if (selectedRoute) {
-    goToDetail();
-  } else {
-    goToRoutes();
-  }
-})();
+Promise.all([syncPagosManuales(), syncCortes(), syncCompartidos(), syncRutaLinieros()]).then(() => {
+  if (excelRows.length === 0) showView('upload');
+  else if (selectedRoute) goToDetail();
+  else goToRoutes();
+});
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('service-worker.js').catch(() => {});
